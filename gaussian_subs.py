@@ -116,19 +116,23 @@ NYI            'LGeom'       LabeledGeometry() object from chem_subs.py
         # set the "%" arguments:  'chk', 'mem', 'nprocs'
         # supply as dict like {'chk': 'molec.chk', 'mem': '16gb', 'nprocs': 8}
         valid = ['chk', 'mem', 'nprocs']
-        for K, v in kwargs:
+        for K, v in kwargs.items():
             k = K.lower()
             if k in valid:
                 setattr(self, k, str(v))
             return
+    def set_geometry(self, newGeom):
+        # replace current Lgeometry() objecct
+        self.LGeom = newGeom
+        return
     def set_keyword(self, kw, opts, add=False):
         # set options for specified command-line keyword
         # 'opts' may be a list, no punctuation =(,) needed
         # if 'add', then preserve existing options
-        # if opts == 'delete', delete the keyword
+        # if opts == 'delete', delete the keyword (does not combine with 'add')
         # e.g. 'opt', '
         # recognized keywords:
-        known = ['opt', 'geom']
+        known = ['opt', 'geom', 'symm']
         kw = kw.lower()
         if kw not in known:
             chem.print_err('', f'unknown keyword "{kw}"', halt=False)
@@ -249,6 +253,11 @@ def read_command(fhandl):
     #   (2) byte numbers (file positions for seek/tell),
     #   (3) the command-lines of interest
     #   (4) the theoretical model (method/basis)
+    try:
+        fhandl = open(fhandl, 'r')
+    except:
+        # already a file handle
+        pass
     byte_start = fhandl.tell()
     fhandl.seek(0)  # rewind file
     cmd = []
@@ -310,7 +319,7 @@ def read_command(fhandl):
     fhandl.seek(byte_start) # restore file pointer to original position
     return df
 ##
-def read_g09_rev(fhandl):
+def read_version(fhandl):
     # read and return the first instance of:
     #   major version; revision; early date; late date
     byte_start = fhandl.tell()
@@ -355,6 +364,11 @@ def read_comments(fhandl):
     # return a DataFrame: (1) line numbers (base 1),
     #   (2) file positions (bytes),
     #   (3) the user comments as requested
+    try:
+        fhandl = open(fhandl, 'r')
+    except:
+        # already a file handle
+        pass
     byte_start = fhandl.tell()
     fhandl.seek(0)  # rewind file
     comment = []
@@ -430,7 +444,7 @@ def read_charge_mult(fhandl):
     return df
 ##
 def read_std_orient(fhandl):
-    # read all blocks of coordinates labelled "(standard|input) orientation"
+    # read all blocks of coordinates labelled "(standard|input|Z-Matrix) orientation"
     # and return a DataFrame:
     #   (1) line number for the "standard orientation" string,
     #   (2) byte number for same,
@@ -445,7 +459,7 @@ def read_std_orient(fhandl):
     xyz = []
     lineno = 0
     regxdash = re.compile('-{60}')
-    regx = re.compile('(Standard|Input) orientation:')
+    regx = re.compile('(Standard|Input|Z-Matrix) orientation:')
     regxunit = re.compile(r'Coordinates\s+\((\w+)\)')
     instd = False
     while True:
@@ -542,7 +556,7 @@ def read_stoichiometry(fhandl):
     fhandl.seek(byte_start) # restore file pointer to original position
     return df
 ##
-def read_g09_pointgroup(fhandl):
+def read_pointgroup(fhandl):
     # read all displays of point group. Return a DataFrame:
     #   (1) line number(s), (2) byte number(s),
     #   (3) Schoenflies symbol
@@ -573,8 +587,9 @@ def read_g09_pointgroup(fhandl):
     fhandl.seek(byte_start) # restore file pointer to original position
     return df
 ##
-def read_g09_mass(fgout):
+def read_mass(fgout):
     # return the last found "Molecular mass"
+    # Gaussian prints isotopic mass, not averaged weights
     regex = re.compile(r'Molecular mass:\s+(\d+\.\d+)\s+amu')
     mass = 0
     with open(fgout, 'r') as f:
@@ -584,15 +599,24 @@ def read_g09_mass(fgout):
                 mass = float(m.group(1))
     return mass
 ##
-def read_g09_symno(fgout):
+def read_symno(fgout):
     # return the last found "Rotational symmetry number"
-    regex = re.compile(r'Rotational symmetry number\s+(\d+)')
+    regex = re.compile(r' Rotational symmetry number\s+(\d+)')
     symno = 0
-    with open(fgout, 'r') as f:
-        for line in f:
-            m = regex.search(line)
-            if m:
-                symno = int(m.group(1))
+    try:
+        F = open(fgout, 'r')
+        name = True
+    except:
+        # maybe already open
+        F = fgout
+        F.seek(0)  # rewind file
+        name = False
+    for line in F:
+        m = regex.search(line)
+        if m:
+            symno = int(m.group(1))
+    if name:
+        F.close()
     return symno
 ##
 def read_rotational(fhandl):
@@ -873,6 +897,7 @@ def read_atom_masses(fhandl):
     # read atom masses from the main output text
     # return a simple list of atom masses
     # only read first instance
+    # Gaussian prints isotopic mass, not atomic weight
     regx = re.compile(r' Atom\s+\d+ has atomic number\s+\d+ and mass\s+(\d+\.\d+)')
     regend = re.compile(r' Molecular mass:\s\d+\.\d+ amu')
     byte_start = fhandl.tell()
@@ -887,6 +912,21 @@ def read_atom_masses(fhandl):
             masses.append(float(m.group(1)))
     fhandl.seek(byte_start)  # return file pointer to original position
     return masses
+##
+def read_electronic_state(fhandl, contract=True):
+    # read the "electronic state" identified by Gaussian
+    # return only the last instance
+    # return "?" if Gaussian couldn't figure it out
+    # if "contract" is True, remove the hyphen
+    rx = re.compile(' The electronic state is (\S+)\.')
+    estate = '?'
+    for line in fhandl:
+        m = rx.match(line)
+        if m:
+            estate = m.group(1)
+    if contract:
+        estate = estate.replace('-', '')
+    return estate
 ##
 def read_g09_archive_block(fhandl):
     # read the last archive block in a Gaussian09 output file
@@ -986,7 +1026,7 @@ def read_g09_identify_scanned(fhandl):
     fhandl.seek(byte_start) # restore file pointer to original position
     return df
 ##
-def read_g09_optim_param(fhandl):
+def read_optim_param(fhandl):
     # read optimized value of coordinates, return a DataFrame:
     #   (1) line number(s) of "optimized parameters" string,
     #   (2) byte number(s),
@@ -1056,6 +1096,30 @@ def read_g09_optim_param(fhandl):
     df = pd.DataFrame(data=data, columns=cols)
     fhandl.seek(byte_start) # restore file pointer to original position
     return df
+##
+def read_optimized_coordinates(file):
+    # return a list of DataFrames of coordinates that immediately follow a notice of optimized geometry
+    FGAU = chem.ensure_file_handle(file)
+    lineno = chem.find_line_number(FGAU, 'Stationary point found')
+    dfcrd = read_std_orient(FGAU)
+    coords = []
+    for lno in lineno:
+        lcrd = chem.min_to_exceed(dfcrd.line, lno)
+        if not np.isnan(lcrd):
+            coords.append(dfcrd[dfcrd.line == lcrd].Coordinates.iloc[0])
+    return coords
+##
+def xxxread_optimized_coordinates(file):
+    # return a list of DataFrames of coordinates that immediately follow a notice of optimized geometry
+    FGAU = chem.ensure_file_handle(file)
+    dfopt = read_optim_param(FGAU)
+    dfcrd = read_std_orient(FGAU)
+    coords = []
+    for lno in dfopt.line:
+        lcrd = chem.min_to_exceed(dfcrd.line, lno)
+        if not np.isnan(lcrd):
+            coords.append(dfcrd[dfcrd.line == lcrd].Coordinates.iloc[0])
+    return coords
 ##
 def extract_g09_scan(fhandl, shortname=False):
     # assemble scan information, return a sorted DataFrame:
@@ -1293,6 +1357,11 @@ def read_freqs(fhandl):
     #           (3g1) atomic number (Z),
     #           (3g2-4) displacement coordinates x, y, z
     # 
+    try:
+        fhandl = open(fhandl, 'r')
+    except:
+        # already a file handle
+        pass
     byte_start = fhandl.tell()
     fhandl.seek(0)
     freqblock = []
@@ -1982,6 +2051,36 @@ def read_Mulliken_charges(fhandl, sumH=False):
     fhandl.seek(byte_start) # restore file pointer to original position
     return df
 ##
+def read_nbfn(fhandl):
+    # read number of basis functions
+    # Return:
+    #   (1) list of numbers of basis functions
+    #   (2) list of line numbers
+    try:
+        byte_start = fhandl.tell()
+        fhandl.seek(0)  # rewind file
+        isfile = False
+    except:
+        fhandl = open(fhandl, 'r')  # assume it's a filename
+        isfile = True
+    nbfn = []
+    lineno = []
+    regx = re.compile(r'^\s+(\d+) basis functions,\s+\d+ primitive')
+    lno = 0
+    while True:
+        line = fhandl.readline()
+        if not line:
+            break
+        lno += 1  # first line is #1
+        m = regx.match(line)
+        if not m:
+            continue
+        # read number of basis functions
+        n = int(m.group(1))
+        nbfn.append(n)
+        lineno.append(lno)
+        return nbfn, lineno
+ #    
 def read_Mulliken_pops(fhandl):
     # Read (one) full Mulliken population analysis
     # Return four things:
@@ -2459,7 +2558,7 @@ def read_fchk(fname):
     print('last lineno = {:d}'.format(lineno))
     return fchk
 ##
-def read_density_cube(fname, units='ang'):
+def read_density_cube(fname):
 	# read Gaussian09 cube file of total density
 	# return a dict with the file contents
 	# see: http://gaussian.com/cubegen/
@@ -2507,11 +2606,6 @@ def read_density_cube(fname, units='ang'):
 	fcub.close()
 	# cube file read successfully
 	cube['rho'] = np.array(rho, dtype='float').reshape(cube['vector']['n'])
-	if units == 'ang':
-		# convert distances from bohr to angstrom
-		cube['origin'] *= chem.BOHR
-		for i in range(3):
-			cube['vector']['v'][i] *= chem.BOHR
 	return cube
 ##
 class NMR(object):
@@ -2700,4 +2794,33 @@ def minxyzGeom(fname):
     G.comment = comment
     G.set_masses(masses)
     return G
+##
+def PG_type(PG):
+    '''
+    Given the name of a point group (from Gaussian), return a descriptor:
+        asymmetric (top)
+        symmetric (top)
+        spherical (top) (includes atoms)
+        linear
+    '''
+    pgtype = 'asymmetric'
+    pg = PG.lower()
+    if ('t' in pg) or ('o' in pg) or ('i' in pg):
+        pgtype = 'spherical'
+    else:
+        if '*' in pg:
+            pgtype = 'linear'
+        else:
+            # look for rotation axis > 2
+            m = re.search('[cd](\d+)', pg)
+            if m:
+                if int(m.group(1)) > 2:
+                    pgtype = 'symmetric'
+            else:
+                # look for improper rotation > 5
+                m = re.search('s(\d+)', pg)
+                if m:
+                    if int(m.group(1)) > 5:
+                        pgtype = 'symmetric'
+    return pgtype
 ##

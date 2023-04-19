@@ -1,5 +1,6 @@
 # Routines for general quantum chemistry (no particular software package)
 # Python3 and pandas
+# this version does not depend upon the 'quaternion' module
 # Karl Irikura 
 #
 import re, sys
@@ -7,61 +8,31 @@ import re, sys
 import copy
 import numpy as np
 import pandas as pd
-import quaternion
-import random
+#import quaternion
 from scipy.spatial.distance import cdist
 from scipy import interpolate
 from scipy import optimize
-import scipy.stats
 import matplotlib.pyplot as plt
-from urllib.request import urlopen
-from urllib.parse import quote
 #
 # CODATA 2018 constants from physics.nist.gov, retrieved 7/13/2020
 AVOGADRO = 6.02214076e23     # mol^-1 (exact, defined value)
 BOLTZMANN = 1.380649e-23       # J/K (exact, defined value)
 RGAS = AVOGADRO * BOLTZMANN      # J/mol/K (exact)
 PLANCK = 6.62607015e-34    # J s (exact, defined value)
-HBAR = PLANCK / (2 * np.pi)  # h / 2*pi
 CLIGHT = 299792458.        # m/s (exact, defined value)
 CM2KJ = PLANCK * AVOGADRO * CLIGHT / 10  # convert from cm^-1 to kJ/mol
 CM2K = 100 * CLIGHT * PLANCK / BOLTZMANN   # convert from cm^-1 to Kelvin
 AMU = 1.66053906660e-27     # kg/u
 HARTREE = 4.3597447222071e-18 # J; uncertainty is 85 in last two digits
-AU2S = HBAR / HARTREE      # atomic unit of time, in s
 AU2CM = 2.1947463136320e05   # Hartree in cm^-1; unc. is 43 in last two digits
 AU2KJMOL = HARTREE * AVOGADRO / 1000.  # Hartree in kJ/mol
 AU2EV = 27.211386245988    # Hartree in eV; unc. is 53 in last two digits
 CALORIE = 4.184            # multipy cal * CALORIE to get J
-ATM2KPA = 101.325          # convert pressure in atm to kPa
+ATM_KPA = 101.325          # convert pressure in atm to kPa
 EMASS = 9.1093837015e-31   # electron mass in kg; unc. is 28 in last two digits
 BOHR = 0.529177210903      # Bohr radius in Angstrom; unc. is 80 in last two digits
 AMU2AU = AMU / EMASS       # amu expressed in a.u. (viz., electron masses)
 EV2CM = AU2CM / AU2EV      # eV expressed in cm^-1
-EV2KJMOL = AU2KJMOL / AU2EV  # eV expressed in kJ/mol
-KJMOL2CM = AU2CM / AU2KJMOL  # kJ/mol expressed in cm**-1
-
-DEBYE = 0.3934303  # Debye/e.a0 from a less reliable source
-
-OMEGA = '\N{GREEK CAPITAL LETTER OMEGA}'
-LAMDA = '\N{GREEK CAPITAL LETTER LAMDA}'
-SIGMA = '\N{GREEK CAPITAL LETTER SIGMA}'
-PPI = '\N{GREEK CAPITAL LETTER PI}'
-DELTA = '\N{GREEK CAPITAL LETTER DELTA}'
-PHI = '\N{GREEK CAPITAL LETTER PHI}'
-GAMMA = '\N{GREEK CAPITAL LETTER GAMMA}'
-ETA = 'H'  # easier for typists
-GLAMBDA = [SIGMA, PPI, DELTA, PHI, GAMMA, ETA]
-LAMBDA = ['Sigma', 'Pi', 'Delta', 'Phi', 'Gamma']
-LSYMB = ['S', 'P', 'D', 'F', 'G', 'H']
-
-SPINMULT = {0: 'Singlet', 0.5: 'Doublet', 1: 'Triplet', 1.5: 'Quartet', 
-            2: 'Quintet', 2.5: 'Sextet', 3: 'Septet', 4.5: 'Octet'}
-MULTSPIN = {v: k for k, v in SPINMULT.items()}
-SPINLABEL = {2*k+1: v for k, v in SPINMULT.items()}
-LABELSPIN = {v: k for k, v in SPINLABEL.items()}
-
-
 EPS0 = 8.8541878128e-12  # vacuum permittivity in F/m
 PI = np.pi
 #
@@ -69,9 +40,6 @@ GOLD = (1 + np.sqrt(5))/2  # golden ratio
 def isotopic_mass(atlabel):
     # Given a label like '1-H' or 'pt195', return the atomic mass
     # Data from from https://physics.nist.gov/cgi-bin/Compositions/stand_alone.pl
-    if atlabel in ['reference', 'source', 'citation']:
-        # return the URI of the data source 
-        return 'https://www.nist.gov/pml/atomic-weights-and-isotopic-compositions-relative-atomic-masses'
     rxn = re.compile('\d+')
     rxsym = re.compile('[a-zA-Z]+')
     n = int(rxn.search(atlabel).group(0))
@@ -87,7 +55,6 @@ def isotopic_mass(atlabel):
               7: {14: 14.00307400443, 15: 15.00010889888},
               8: {16: 15.99491461957, 17: 16.99913175650, 18: 17.99915961286},
               9: {19: 18.99840316273},
-              13: {27: 26.98153853},
               16: {32: 31.9720711744, 33: 32.9714589098, 34: 33.967867004, 36: 35.96708071},
               17: {35: 34.968852682, 37: 36.965902602},
               35: {79: 78.9183376, 81: 80.9162897},
@@ -135,516 +102,6 @@ def dominant_isotope(el):
               231.035879, 238.050783, 237.048167, 244.064198]            # Pu
     return mtable[Z]
 ##
-def max_valence(el):
-    # Given element (Z or symbol), return its typical number of 
-    #   covalent bonds. (This is less meaningful beyond the 2p block.)
-    # Helpful for guessing bond order and maybe oxidation state. 
-    # Values for d-block may be bad; consult binary hydrides/halides? 
-    try:
-        Z = int(el)
-    except:
-        Z = elz(el)
-    valmax = [0, 1, 0,   # null, H, He
-              1, 2, 3, 4, 3, 2, 1, 0,  # Li-Ne
-              1, 2, 3, 4, 3, 2, 1, 0,  # Na-Ar
-              1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 3, 2, 1, 0, # K-Kr
-              1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 1, 2, 3, 4, 3, 2, 1, 0, # Rb-Xe
-              ]
-    if Z < len(valmax):
-        return valmax[Z]
-    else:
-        return None
-##
-def often_hypervalent(el):
-    # return True or False, whether the element is often hypervalent
-    # main group only
-    try:
-        Z = int(el)
-    except:
-        Z = elz(el)
-    often = [7, 15, 16, 17]  # N, P, S, Cl
-    often.append([33, 34, 35])  # As, Se, Br
-    often.append([51, 52, 53, 54])  # Sb, Te, I, Xe
-    return (Z in often)
-##
-def Lz_from_greek(term_label):
-    # given a diatomic greek term label such as (1)1Σ+, return the value of Lz
-    # return None on failure
-    rx_lam = re.compile('([ΣΠΔΦΓ])')
-    Lz = {'Σ': 0, 'Π': 1, 'Δ': 2, 'Φ': 3, 'Γ': 4}
-    m = rx_lam.search(term_label)
-    if m:
-        try:
-            return Lz[m.group(1)]
-        except KeyError:
-            return None
-    else:
-        # did not find a matching greek letter
-        return None
-##
-def empiricalSOC(A):
-    # for atom or molecule with symbol 'A', return the empirical
-    # ground-state spin-orbit correction, by lookup table
-    # it is always non-positive
-    # result is in wavenumber (cm-1)
-    # atomic values from (2J+1)-averaging of NIST AEL data
-    A = elz(A, choice='symbol')
-    SOC = {'H': 0, 'He': 0, 'Li': 0, 'Be': 0, 'B': 10.19,
-        'C': 29.59, 'N': 0, 'O': 77.97, 'F': 134.71, 'Ne': 0,
-        'Na': 0, 'Mg': 0, 'Al': 74.7, 'Si': 149.68, 'P': 0,
-        'S': 195.76, 'Cl': 294.12, 'Ar': 0, 'K': 0, 'Ca': 0,
-        'NO': 59.9  # from CCCBDB
-        }
-    try:
-        return -SOC[A]
-    except:
-        return None
-##
-def weighted_mean(values, weights, formula='Cochran', normalize=False):
-    # weighted statistics (reliability weights)
-    # return weighted mean and its standard error
-    # Using three methods described by Gatz and Smith, Atmos. Env. 29, 1185 (1995)
-    if weights is None:
-        # use uniform weights
-        weights = np.ones_like(values)
-    w = np.array(weights)
-    # check for negative weights
-    if (w < 0).any():
-        print_err('', 'Negative weights not allowed')
-    n = len(values)
-    if len(weights) != n:
-        print_err('', '{:d} values but {:d} weights'.format(n, len(weights)))
-    wsum = w.sum()
-    if normalize:
-        # normalize weights
-        w = w / wsum
-        wsum = 1
-    wbar = w.mean()
-    v = np.array(values)
-    mu = (w * v).sum() / wsum
-    A = n / (n-1) / wsum**2
-    if formula == 'Cochran':
-        # use my algebraic simplification of the formula in Gatz and Smith
-        vdiff = v - mu
-        S = ( (w * vdiff)**2 ).sum()
-        SEMw = np.sqrt(A * S)
-    elif formula == 'Cochran_raw':
-        # use unsimplified expression from Gatz and Smith
-        wvdiff = w * v - wbar * mu
-        S1 = (wvdiff ** 2).sum()
-        pdiff = w - wbar
-        S2 = (pdiff * wvdiff).sum()
-        S3 = (pdiff ** 2).sum()
-        Stot = S1 - 2*mu*S2 + mu*mu*S3
-        SEMw = np.sqrt(A * Stot)
-    elif formula == 'Galloway':
-        # formula from Gatz and Smith
-        S1 = ((w * v)**2).sum()
-        S2 = (w * v).sum()
-        Stot = S1 - S2 * S2 / n
-        SEMw = np.sqrt(A * Stot)
-    elif formula == 'Miller':
-        # formula from Gatz and Smith
-        B = n * wsum
-        vdiff2 = (v - mu) ** 2
-        S = (w * vdiff2).sum()
-        SEMw = np.sqrt(S / B)
-    else:
-        print_err('', 'Unrecognized formula = {:s}'.format(formula))
-    return mu, SEMw
-##
-def relstdvar(data):
-    # compute the variance and the variance of the variance
-    # return the ratio (sqrt(varvar) / var) as estimate of the relative
-    # standard deviation of the variance
-    # see https://math.stackexchange.com/questions/72975/variance-of-sample-variance
-    n = len(data)
-    mu4 = scipy.stats.moment(data, 4)  # fourth moment
-    var = np.var(data, ddof=1)
-    varvar = mu4/n - var*var*(n-3)/n/(n-1)
-    stdvar = np.sqrt(varvar)
-    return stdvar/var
-##
-def convert_unit(quantity, target_unit):
-    '''
-    Unit conversion; 'quantity' is a dict with keys:
-        - 'value' (or 'how_much') 
-        - 'unit'
-        - 'unc' (optional; negative values are not changed)
-        any other keys in 'quantity' will be copied (simple copy, not deep)
-    'target_unit' is a string in one of the lists below
-    Return value: another dict with the new units
-    '''
-    try:
-        v1 = quantity['value']
-        vkey = 'value'
-    except KeyError:
-        v1 = quantity['how_much']
-        vkey = 'how_much'
-    except:
-        print_err('', 'unable to convert units for quantity: ' + str(quantity))
-    try:
-        unc1 = quantity['unc']
-        if unc1 < 0:
-            # don't convert negative uncertainties because they have
-            #   special meaning; preserve value
-            unc2 = unc1
-    except KeyError:
-        unc1 = None
-    u1 = quantity['unit'].lower()
-    u2 = target_unit.lower()
-    qconv = quantity.copy()
-    if u1 == u2:
-        # no conversion needed
-        return qconv
-    #
-    # the order of the unit names and the regex's must be consistent below
-    regxE = [re.compile(s) for s in \
-             ['har',     'ev', 'kj',     'cm',   'kcal']]
-    energy = ['hartree', 'ev', 'kj/mol', 'cm-1', 'kcal/mol']
-    regxD = [re.compile(s) for s in ['ang',      'bohr']]
-    distance =                      ['angstrom', 'bohr']
-    # 'me' unit is electron mass (atomic unit of mass)
-    regxM = [re.compile(s) for s in ['u',   'kg', 'me']]
-    mass =                          ['amu', 'kg', 'me']
-    # special treatment for mass unit 'amu'/'u'
-    regxM[0] = re.compile(r'u\b')
-    # construct boolean arrays of unit matching
-    # need 'search' method for mass because of 'u'/'amu'
-    bu1E = np.array([bool(regx.match(u1)) for regx in regxE])
-    bu1D = np.array([bool(regx.match(u1)) for regx in regxD])
-    bu1M = np.array([bool(regx.search(u1)) for regx in regxM])
-    bu2E = np.array([bool(regx.match(u2)) for regx in regxE])
-    bu2D = np.array([bool(regx.match(u2)) for regx in regxD])
-    bu2M = np.array([bool(regx.search(u2)) for regx in regxM])
-    # construct boolean lists of quantity type
-    b1 = np.array([b.any() for b in [bu1E, bu1D, bu1M]])
-    b2 = np.array([b.any() for b in [bu2E, bu2D, bu2M]])
-    if (b1.any() and b2.any()) and \
-        (np.argwhere(b1)[0][0] == np.argwhere(b2)[0][0]):
-        # units are known and are compatible
-        itype = np.argwhere(b1)[0][0]
-    else:
-        # units are problematic
-        print_err('', 'Unable to convert ' +
-            '{} to {}'.format(quantity['unit'], target_unit))
-    # do the conversion
-    # the multiplicative conversion constant is 'CONST'
-    CONST = None
-    if itype == 0:
-        # energy units
-        i1 = np.argwhere(bu1E)[0][0]
-        i2 = np.argwhere(bu2E)[0][0]
-        # change 'u1' and 'u2' to the full unit names
-        u1 = energy[i1]
-        u2 = energy[i2]
-        if i1 == i2:
-            # no conversion needed, but rename the unit
-            qconv['unit'] = u2
-            return qconv
-        if u2 == 'hartree':
-            # converting to hartree
-            if u1 == 'ev':
-                CONST = 1 / AU2EV
-            elif u1 == 'kj/mol':
-                CONST = 1 / AU2KJMOL
-            elif u1 == 'cm-1':
-                CONST = 1 / AU2CM
-            elif u1 == 'kcal/mol':
-                CONST = CALORIE / AU2KJMOL
-        elif u2 == 'ev':
-            if u1 == 'hartree':
-                CONST = AU2EV
-            elif u1 == 'kj/mol':
-                CONST = 1 / EV2KJMOL
-            elif u1 == 'cm-1':
-                CONST = 1 / EV2CM
-            elif u1 == 'kcal/mol':
-                CONST = CALORIE / EV2KJMOL
-        elif u2 == 'kj/mol':
-            if u1 == 'hartree':
-                CONST = AU2KJMOL
-            elif u1 == 'ev':
-                CONST = EV2KJMOL
-            elif u1 == 'cm-1':
-                CONST = 1 / KJMOL2CM
-            elif u1 == 'kcal/mol':
-                CONST = CALORIE
-        elif u2 == 'cm-1':
-            if u1 == 'hartree':
-                CONST = AU2CM
-            elif u1 == 'ev':
-                CONST = EV2CM
-            elif u1 == 'kj/mol':
-                CONST = KJMOL2CM
-            elif u1 == 'kcal/mol':
-                CONST = CALORIE * KJMOL2CM
-        elif u2 == 'kcal/mol':
-            if u1 == 'hartree':
-                CONST = AU2KJMOL / CALORIE
-            elif u1 == 'ev':
-                CONST = EV2KJMOL / CALORIE
-            elif u1 == 'kj/mol':
-                CONST = 1 / CALORIE
-            elif u1 == 'cm-1':
-                CONST = 1 / KJMOL2CM / CALORIE
-    elif itype == 1:
-        # distance units
-        i1 = np.argwhere(bu1D)[0][0]
-        i2 = np.argwhere(bu2D)[0][0]
-        u1 = distance[i1]
-        u2 = distance[i2]
-        if i1 == i2:
-            # no conversion needed, but rename the unit
-            qconv['unit'] = u2
-            return qconv
-        if u2 == 'angstrom':
-            if u1 == 'bohr':
-                CONST = BOHR
-        elif u2 == 'bohr':
-            if u1 == 'angstrom':
-                CONST = 1 / BOHR
-    elif itype == 2:
-        # mass units
-        i1 = np.argwhere(bu1M)[0][0]
-        i2 = np.argwhere(bu2M)[0][0]
-        u1 = mass[i1]
-        u2 = mass[i2]
-        if i1 == i2:
-            # no conversion needed, but rename the unit
-            qconv['unit'] = u2
-            return qconv
-        if u2 == 'amu':
-            if u1 == 'kg':
-                CONST = 1 / AMU
-            elif u1 == 'me':
-                CONST = 1 / AMU2AU
-        elif u2 == 'kg':
-            if u1 == 'amu':
-                CONST = AMU
-            elif u1 == 'me':
-                CONST = 1 / AMU2AU * AMU
-        elif u2 == 'me':
-            if u1 == 'amu':
-                CONST = AMU2AU
-            elif u1 == 'kg':
-                CONST = 1 / AMU * AMU2AU
-    if CONST is None:
-        # failure
-        print_err('', 'unable to convert ({} {}) to {}'.format(v1, 
-            quantity['unit'], target_unit))
-    qconv['unit'] = u2
-    v2 = v1 * CONST
-    qconv[vkey] = v2
-    if (unc1 is not None) and (unc1 >= 0):
-        # convert the uncertainty, too
-        unc2 = unc1 * CONST
-        qconv['unc'] = unc2
-    return qconv
-##
-def convert_unit_old(quantity, target_unit):
-    '''
-    Unit conversion; 'quantity' is a dict with keys:
-        - 'value' (or 'how_much') 
-        - 'unit'
-        - 'unc' (optional; negative values are not changed)
-        any other keys in 'quantity' will be copied (simple copy, not deep)
-    'target_unit' is a string in one of the lists below
-    Return value: another dict with the new units
-    '''
-    try:
-        v1 = quantity['value']
-        vkey = 'value'
-    except KeyError:
-        v1 = quantity['how_much']
-        vkey = 'how_much'
-    except:
-        print_err('', 'unable to convert units for quantity: ' + str(quantity))
-    try:
-        unc1 = quantity['unc']
-        if unc1 < 0:
-            # don't convert negative uncertainties because they have
-            #   special meaning
-            unc1 = None
-    except KeyError:
-        unc1 = None
-    u1 = quantity['unit'].lower()
-    u2 = target_unit.lower()
-    qconv = quantity.copy()
-    if u1 == u2:
-        # no conversion needed
-        return qconv
-    #
-    # the order of the unit names and the regex's must be consistent below
-    regxE = [re.compile(s) for s in \
-             ['har',     'ev', 'kj',     'cm',   'kcal']]
-    energy = ['hartree', 'ev', 'kj/mol', 'cm-1', 'kcal/mol']
-    regxD = [re.compile(s) for s in ['ang',      'bohr']]
-    distance =                      ['angstrom', 'bohr']
-    # 'me' unit is electron mass (atomic unit of mass)
-    regxM = [re.compile(s) for s in ['u',   'kg', 'me']]
-    mass =                          ['amu', 'kg', 'me']
-    # special treatment for mass unit 'amu'/'u'
-    regxM[0] = re.compile(r'u\b')
-    # construct boolean arrays of unit matching
-    # need 'search' method for mass because of 'u'/'amu'
-    bu1E = np.array([bool(regx.match(u1)) for regx in regxE])
-    bu1D = np.array([bool(regx.match(u1)) for regx in regxD])
-    bu1M = np.array([bool(regx.search(u1)) for regx in regxM])
-    bu2E = np.array([bool(regx.match(u2)) for regx in regxE])
-    bu2D = np.array([bool(regx.match(u2)) for regx in regxD])
-    bu2M = np.array([bool(regx.search(u2)) for regx in regxM])
-    # construct boolean lists of quantity type
-    b1 = np.array([b.any() for b in [bu1E, bu1D, bu1M]])
-    b2 = np.array([b.any() for b in [bu2E, bu2D, bu2M]])
-    if (b1.any() and b2.any()) and \
-        (np.argwhere(b1)[0][0] == np.argwhere(b2)[0][0]):
-        # units are known and are compatible
-        itype = np.argwhere(b1)[0][0]
-    else:
-        # units are problematic
-        print_err('', 'Unable to convert ' +
-            '{} to {}'.format(quantity['unit'], target_unit))
-    # do the conversion
-    if itype == 0:
-        # energy units
-        i1 = np.argwhere(bu1E)[0][0]
-        i2 = np.argwhere(bu2E)[0][0]
-        # change 'u1' and 'u2' to the full unit names
-        u1 = energy[i1]
-        u2 = energy[i2]
-        if i1 == i2:
-            # no conversion needed, but rename the unit
-            qconv['unit'] = u2
-            return qconv
-        if u2 == 'hartree':
-            # converting to hartree
-            if u1 == 'ev':
-                v2 = v1 / AU2EV
-            elif u1 == 'kj/mol':
-                v2 = v1 / AU2KJMOL
-            elif u1 == 'cm-1':
-                v2 = v1 / AU2CM
-            elif u1 == 'kcal/mol':
-                v2 = v1 * CALORIE / AU2KJMOL
-            else:
-                # should never get here
-                v2 = None
-        elif u2 == 'ev':
-            if u1 == 'hartree':
-                v2 = v1 * AU2EV
-            elif u1 == 'kj/mol':
-                v2 = v1 / EV2KJMOL
-            elif u1 == 'cm-1':
-                v2 = v1 / EV2CM
-            elif u1 == 'kcal/mol':
-                v2 = v1 * CALORIE / EV2KJMOL
-            else:
-                v2 = None
-        elif u2 == 'kj/mol':
-            if u1 == 'hartree':
-                v2 = v1 * AU2KJMOL
-            elif u1 == 'ev':
-                v2 = v1 * EV2KJMOL
-            elif u1 == 'cm-1':
-                v2 = v1 / KJMOL2CM
-            elif u1 == 'kcal/mol':
-                v2 = v1 * CALORIE
-            else:
-                v2 = None
-        elif u2 == 'cm-1':
-            if u1 == 'hartree':
-                v2 = v1 * AU2CM
-            elif u1 == 'ev':
-                v2 = v1 * EV2CM
-            elif u1 == 'kj/mol':
-                v2 = v1 * KJMOL2CM
-            elif u1 == 'kcal/mol':
-                v2 = v1 * CALORIE * KJMOL2CM
-            else:
-                v2 = None
-        elif u2 == 'kcal/mol':
-            if u1 == 'hartree':
-                v2 = v1 * AU2KJMOL / CALORIE
-            elif u1 == 'ev':
-                v2 = v1 * EV2KJMOL / CALORIE
-            elif u1 == 'kj/mol':
-                v2 = v1 / CALORIE
-            elif u1 == 'cm-1':
-                v2 = v1 / KJMOL2CM / CALORIE
-            else:
-                v2 = None
-        else:
-            # should never get here
-            v2 = None
-    elif itype == 1:
-        # distance units
-        i1 = np.argwhere(bu1D)[0][0]
-        i2 = np.argwhere(bu2D)[0][0]
-        u1 = distance[i1]
-        u2 = distance[i2]
-        if i1 == i2:
-            # no conversion needed, but rename the unit
-            qconv['unit'] = u2
-            return qconv
-        if u2 == 'angstrom':
-            if u1 == 'bohr':
-                v2 = v1 * BOHR
-            else:
-                v2 = None
-        elif u2 == 'bohr':
-            if u1 == 'angstrom':
-                v2 = v1 / BOHR
-            else:
-                v2 = None
-        else:
-            v2 = None
-    elif itype == 2:
-        # mass units
-        i1 = np.argwhere(bu1M)[0][0]
-        i2 = np.argwhere(bu2M)[0][0]
-        u1 = mass[i1]
-        u2 = mass[i2]
-        if i1 == i2:
-            # no conversion needed, but rename the unit
-            qconv['unit'] = u2
-            return qconv
-        if u2 == 'amu':
-            if u1 == 'kg':
-                v2 = v1 / AMU
-            elif u1 == 'me':
-                v2 = v1 / AMU2AU
-            else:
-                v2 = None
-        elif u2 == 'kg':
-            if u1 == 'amu':
-                v2 = v1 * AMU
-            elif u1 == 'me':
-                v2 = v1 / AMU2AU * AMU
-            else:
-                v2 = None
-        elif u2 == 'me':
-            if u1 == 'amu':
-                v2 = v1 * AMU2AU
-            elif u1 == 'kg':
-                v2 = v1 / AMU * AMU2AU
-            else:
-                v2 = None
-        else:
-            v2 = None
-    else:
-        v2 = None
-    if v2 is None:
-        # failure
-        print_err('', 'unable to convert ({} {}) to {}'.format(v1, 
-            quantity['unit'], target_unit))
-    qconv['unit'] = u2
-    qconv[vkey] = v2
-    if unc1 is not None:
-        # convert the uncertainty, too
-        qconv['unc'] = unc1 * v2 / v1
-    return qconv
-##
 def RRHO_symmtop(freqs, Emax, binwidth, ABC_GHz, Bunit='GHz'):
     # RRHO with symmetric-top approximation.
     # Use Stein-Rabinovitch counting method (less roundoff error than 
@@ -679,6 +136,7 @@ def RRHO_symmtop(freqs, Emax, binwidth, ABC_GHz, Bunit='GHz'):
     # find centers of energy bins
     centers = binwidth * (0.5 + np.arange(n))
     return nos, centers
+    
 ##
 def rotational_levels_symmtop(ABC, Emax, Bunit='cm-1'):
     # Rigid-rotor levels for a symmetric top
@@ -768,29 +226,23 @@ def Beyer_Swinehart(freqs, Emax, binwidth):
     centers = binwidth * (0.5 + np.arange(n))
     return nos, centers
 ##
-def thermo_RRHO(T, freqs, symno, ABC_GHz, mass, pressure=1.0e5):
+def thermo_RRHO(T, freqs, symno, ABC_GHz, mass, pressure=1.0e5, deriv=0):
     # Return S, Cp, and [H(T)-H(0)] at the specified temperature
-    if T == 0:
-        return 0., 0., 0.,
-    lnQ = lnQvrt(T, freqs, symno, ABC_GHz, mass, pressure=pressure)
-    d = lnQvrt(T, freqs, symno, ABC_GHz, mass, pressure=pressure, deriv=1)  # derivative of lnQ
+    lnQ = lnQvrt(T, freqs, symno, ABC_GHz, mass)
+    d = lnQvrt(T, freqs, symno, ABC_GHz, mass, deriv=1)  # derivative of lnQ
     deriv = T * d + lnQ  # derivative of TlnQ
     S = RGAS * (deriv - np.log(AVOGADRO) + 1)
-    d2 = lnQvrt(T, freqs, symno, ABC_GHz, mass, pressure=pressure, deriv=2)  # 2nd derivative of lnQ
+    d2 = lnQvrt(T, freqs, symno, ABC_GHz, mass, deriv=2)  # 2nd derivative of lnQ
     deriv2 = 2 * d + T * d2  # 2nd derivative of TlnQ
     Cp = RGAS + RGAS * T * deriv2
     ddH = RGAS * T * (1 + T * d) / 1000
-    return float(S), float(Cp), float(ddH)
+    return (S, Cp, ddH)
 ##
 def lnQvrt(T, freqs, symno, ABC_GHz, mass, pressure=1.0e5, deriv=0):
     # Return the total (vib + rot + transl) ln(Q) partition function
     #   or a derivative. RRHO approximation
-    if len(freqs) == 0:
-        # should be an atom
-        lnQv = lnQr = 0
-    else:
-        lnQv = lnQvib(T, freqs, deriv=deriv)
-        lnQr = lnQrot(T, symno, ABC_GHz, deriv=deriv)
+    lnQv = lnQvib(T, freqs, deriv=deriv)
+    lnQr = lnQrot(T, symno, ABC_GHz, deriv=deriv)
     lnQt = lnQtrans(T, mass, pressure=pressure, deriv=deriv)
     lnQ = lnQv + lnQr + lnQt
     return lnQ
@@ -800,12 +252,7 @@ def lnQtrans(T, mass, pressure=1.0e5, deriv=0):
     #   and optionally a pressure (in Pa), return ln(Q), where
     #   Q is the ideal-gas translational partition function.
     # If deriv > 0, return a (1st or 2nd) derivative of TlnQ
-    #   instead of lnQ.     
-    Tbad = 4.31 * (mass ** -0.6)
-    # this approx is bad unless T >> Tbad
-    if T/Tbad < 10:
-        s = 'T = {} is close to Tbad = {:.1f}'
-        print_err('', s.format(T, Tbad), halt=False)
+    #   instead of lnQ. 
     if deriv == 1:
         # return (d/dT)lnQ = (3/2T)
         return (1.5 / T)
@@ -822,14 +269,12 @@ def lnQtrans(T, mass, pressure=1.0e5, deriv=0):
 ##
 def lnQrot(T, symno, ABC_GHz, deriv=0):
     # Given a temperature (in K), symmetry number, and list of
-    #   rotational constants (in GHz), return ln(Q) or derivative, 
-    #   where Q is the rigid-rotor partition function.
+    #   rotational constants (in GHz), return ln(Q), where Q is
+    #   the rigid-rotor partition function.
     n = len(ABC_GHz)
     if n == 0:
         # atom; no rotations possible
         return 0.
-    elif symno < 1:
-        print_err('', f'Invalid symmetry number = {symno}')
     if deriv == 1:
         # first derivative of lnQ depends only on temperature
         if n < 3:
@@ -861,8 +306,8 @@ def lnQrot(T, symno, ABC_GHz, deriv=0):
 ##
 def lnQvib(T, freqs, deriv=0):
     # Given a temperature (in K) and array of vibrational 
-    #   frequencies (in cm^-1), return ln(Q) or derivative, 
-    #   where Q is the harmonic-oscillator partition function.
+    #   frequencies (in cm^-1), return ln(Q) where Q is
+    #   the harmonic-oscillator partition function.
     kTh = T * BOLTZMANN / PLANCK  # kT/h expressed in Hz
     lnQ = 0.
     nu = freqs * 100 # convert to m^-1 (as array)
@@ -887,75 +332,6 @@ def lnQvib(T, freqs, deriv=0):
     lnQ = -1 * lnq.sum()
     return lnQ
 ##
-def lnQlevels(T, energ, degen, deriv=0):
-    # T = temperature / K
-    # energy = list of energies / cm-1
-    # degen  = list of degeneracies 
-    #   energy[] and degen[] must have same length
-    # deriv = desired derivative of lnQ
-    # Return: ln(Q) where Q is the partition function
-    #   or the requested derivative, if deriv > 0
-    if len(energ) != len(degen):
-        s = 'Length of energy is {:d} but length of degen is {:d}'
-        print_err('', s.format(len(energ), len(degen)))
-    # check for zeros in the degeneracy list
-    g = np.array(degen)
-    if (g == 0).any():
-        # print a warning
-        s = 'there are degeneracies = 0'
-        print_err('', s, halt=False)
-    kTh = T * BOLTZMANN / PLANCK  # kT/h expressed in Hz
-    # convert cm-1 to m-1 and then to s-1
-    ehz = np.array(energ) * 100 * CLIGHT
-    v = ehz / kTh  # reduced energies
-    x = np.exp(-v)
-    Q = np.dot(g, x)
-    if deriv > 0:
-        # derivative of lnQ
-        dQ = np.dot(g, v * x) / T  # dQ/dT
-        dlnQ = dQ / Q
-        if deriv == 1:
-            # 1st derivative
-            return dlnQ
-        else:
-            p = v * x * (v - 2)
-            ddQ = np.dot(g, p) * T**-2  # d2Q/dT2
-            ddlnQ = (ddQ / Q) - dlnQ**2
-            if deriv == 2:
-                # 2nd derivative
-                return ddlnQ
-            else:
-                s = 'deriv = {:d} is not implemented'
-                print_err('', s.format(deriv))
-    else:
-        # deriv = 0
-        return np.log(Q)
-##
-def lnQlevels_t(T, energ, degen, mass, pressure=1.0e5, deriv=0):
-    # Return the total (levels + transl) ln(Q) partition function
-    #   or a derivative. 
-    lnQt = lnQtrans(T, mass, pressure=pressure, deriv=deriv)
-    lnQl = lnQlevels(T, energ, degen, deriv=deriv)
-    lnQ = lnQt + lnQl
-    return lnQ
-##
-def thermo_levels_t(T, energ, degen, mass, pressure=1.0e5):
-    # Return S, Cp, and [H(T)-H(0)] at the specified temperature
-    # For a species defined only by explicit levels and degeracies,
-    #   plus translation (probably an atom or a diatomic molecule)
-    if T == 0:
-        return 0., 0., 0.,
-    lnQ = lnQlevels_t(T, energ, degen, mass, pressure=pressure, deriv=0)
-    d = lnQlevels_t(T, energ, degen, mass, pressure=pressure, deriv=1)
-    deriv = T * d + lnQ  # derivative of TlnQ
-    S = RGAS * (deriv - np.log(AVOGADRO) + 1)
-    d2 = lnQlevels_t(T, energ, degen, mass, pressure=pressure, deriv=2)
-    deriv2 = 2 * d + T * d2  # 2nd derivative of TlnQ
-    Cp = RGAS + RGAS * T * deriv2
-    ddH = RGAS * T * (1 + T * d) / 1000
-    return float(S), float(Cp), float(ddH)
-##
-
 def typeCoord(crds):
     #   'Geometry' (a Geometry object)
     #   'cartesian' (a list of elements and list/array of cartesians)
@@ -1376,25 +752,6 @@ def elz(ar, choice=''):
         except ValueError:
             print_err('', 'No element symbol for Z = {:d}'.format(Z))
 ##
-def vpqn(z):
-    # return valence principal quantum number (for neutral atom)
-    # argument is nuclear charge Z
-    if z <= 2:
-        n = 1
-    elif z <= 10:
-        n = 2
-    elif z <= 18:
-        n = 3
-    elif z <= 36:
-        n = 4
-    elif z <= 54:
-        n = 5
-    elif z <= 86:
-        n = 6
-    else:
-        n = 7
-    return n
-##
 def n_core(atno, code=''):
     # given Z value (or element symbol) return number of core electrons
     # if 'atno' is a stoichiometric dict of {'el' : number}, then return the sum for
@@ -1445,10 +802,7 @@ def read_regex(regex, fhandl, idx=1):
     # Return something from a line matchine a regular expression.
     #   First arg is the regular expression; idx is the match-group
     #	to return.  Return a list of values from all matching lines. 
-    try:
-        fhandl.seek(0)
-    except:
-        fhandl = open(fhandl, 'r')
+    fhandl.seek(0)
     matches = []
     regx = re.compile(regex)
     for line in fhandl:
@@ -1469,7 +823,7 @@ def spinname(m):
             return str(m) + '-tet'
     except:
         # convert a string into the corresponding multiplicity
-        return name.index(m.lower())
+        return name.index(m)
 ##
 def max_not_exceed(bigser, target):
     # args are: (1) a pandas Series
@@ -1479,14 +833,6 @@ def max_not_exceed(bigser, target):
     smaller = bigser[bigser <= target]
     return smaller.max()
 ##
-def min_to_exceed(bigser, target):
-    # args are: (1) a pandas Series
-    #           (2) a target value
-    # return the smallest value in 'bigser' that exceeds 'target'
-    # This is useful for matching up line numbers.
-    larger = bigser[bigser >= target]
-    return larger.min()
-##
 def match_lineno(targno, numlist):
     # return the index of the largest value in 'numlist' that does not exceed 'targno'
     # This is for matching up line numbers.
@@ -1494,30 +840,6 @@ def match_lineno(targno, numlist):
     idx = np.argwhere(a <= targno)
     i = idx.max()
     return i
-##
-def ensure_file_handle(fF):
-    # return a file object whether 'fF' is already one, 
-    # or is just the name of a file
-    try:
-        F = open(fF, 'r')
-    except TypeError:
-        # hopefully already a file object
-        F = fF
-    return F
-##
-def find_line_number(file, search_string, case=True):
-    # return a list of line numbers for lines that include the search string
-    F = ensure_file_handle(file)
-    lineno = []
-    for i, line in enumerate(F):
-        if case:
-            if search_string in line:
-                lineno.append(i)
-        else:
-            # case-insensitive when case == False
-            if search_string.lower() in line.lower():
-                lineno.append(i)
-    return lineno
 ##
 def hartree_eV(energy, direction='to_eV', multiplier=1):
     # convert from hartree to eV or the reverse (if direction == 'from_eV')
@@ -1574,14 +896,6 @@ def L_degeneracy(Ltype):
     degen = {'s': 1, 'p': 3, 'd': 5, 'f': 7, 'g': 9, 'h': 11, 'i': 13}
     return degen[Ltype.lower()]
 ##
-def J_from_degen(g):
-    # given a degeneracy (2J+1), return the value of J
-    j = int(np.rint(g - 1)) # round 2J to nearest integer
-    if j % 2 == 0:
-        return j // 2  # return an integer
-    else:
-        return np.round(j/2, 1)   # return float
-##
 def combine_MOspin(df, col1='Orbital', col2='Spin', colnew='MO'):
     # Given a pandas DataFrame, combine a numeric 'Orbital' field with
     #   a 'Spin' field ('alpha' or 'beta') to create a new 'MO' field
@@ -1623,6 +937,7 @@ class Atom(object):
         # multipy the coordinates by the specified matrix
         self.xyz = Rmat.dot(self.xyz)
         return
+    '''
     def rotate_quat(self, Rquat):
         # quaternion rotation using 'Rquat'
         p = quaternion.from_vector_part(self.xyz)
@@ -1634,6 +949,7 @@ class Atom(object):
         Rquat = quaternion.from_spherical_coords(sphangle)
         self.rotate_quat(Rquat)
         return
+    '''
     def printstr( self ):
         # print to a string (exclude mass)
         return '{:s}\t{:9.5f}\t{:9.5f}\t{:9.5f}'.format(self.el, self.xyz[0], self.xyz[1], self.xyz[2])
@@ -1654,10 +970,6 @@ class Atom(object):
         # return the distance to the point
         d = distance(self.xyz, point)
         return d
-    def vdW_radius(self):
-        # return the tabulated van der Waals radius
-        iz = self.Z()
-        return vdW_radius(iz)
     def print(self):
         # print to stdout (including mass)
         print(self.printstr())
@@ -1800,9 +1112,9 @@ class Geometry(object):
             newgeom.spinmult = self.spinmult
             newgeom.comment = self.comment
         # debugging
-        #r = RMSD(self, newgeom)
-        #if r > 1e-6:
-        #    print('RMSD with copy = ', r)
+        r = RMSD(self, newgeom)
+        if r > 1e-6:
+            print('RMSD with copy = ', r)
         return newgeom
     def addatom(self, atom):
         self.atom.append(atom)
@@ -1844,23 +1156,6 @@ class Geometry(object):
         for a in self.atom:
             a.set_mass('atomic_weight')
         return
-    def set_atomic_isotope(self, el, massnum):
-        # Set all occurence of atom 'el' to isotopic mass
-        #   with mass number = 'massnum'  (an integer)
-        # Return the number of atoms affected
-        elem = elz(el, 'symbol')
-        Z = elz(el, 'Z')
-        m = isotopic_mass(f'{massnum}-{elem}')
-        natom = 0
-        for at in self.atom:
-            if elz(at.el, 'Z') == Z:
-                # set the mass
-                at.set_mass(m)
-                natom += 1
-        return natom
-    def set_spinmult(self, value):
-        self.spinmult = value
-        return
     def mass(self):
         # sum of masses of constituent atoms
         m = 0
@@ -1884,6 +1179,7 @@ class Geometry(object):
         for A in self.atom:
             A.rotate(Rmat)
         return
+    '''
     def rotate_quat(self, Rquat):
         # given a rotational quaternion, rotate the molecule
         for A in self.atom:
@@ -1894,6 +1190,7 @@ class Geometry(object):
         Rquat = quaternion.from_spherical_coords(sphangle)
         self.rotate_quat(Rquat)
         return
+    '''
     def invert(self):
         # invert all coordinates
         for A in self.atom:
@@ -1949,7 +1246,7 @@ class Geometry(object):
         return idx
     def find_element(self, el):
         # old, redundant
-        print('>>> this method (find_element) is old and redundant')
+        print('>>> this method is old and redundant')
         return self.element_indices(el)
     def randomize_atom_numbering(self):
         # re-number atoms randomly; may be useful for software testing
@@ -2115,7 +1412,6 @@ def minimize_RMSD_rotation(G, Gref):
         # if posdet == True, require that the determinant of the eigenvector
         #   matrix be positive
         centered = self.copy()
-        centered.toAngstrom()
         if not mass:
             # set all masses = 1
             centered.set_masses(1.)
@@ -2124,10 +1420,7 @@ def minimize_RMSD_rotation(G, Gref):
         moment, axes = np.linalg.eigh( imat )
         # convert moment to kg.m^2, assuming distances in angstrom and masses in u
         moment /= 1.0e20 * AVOGADRO * 1000.0
-        with np.errstate(divide='ignore'):
-            rotconst = PLANCK / ( 8 * PI * PI * CLIGHT * moment )   # now in units (1/m)
-        # convert any 'inf' to 0
-        rotconst[np.abs(rotconst) == np.inf] = 0.
+        rotconst = PLANCK / ( 8 * PI * PI * CLIGHT * moment )   # now in units (1/m)
         rotconst *= CLIGHT * 1.0e-9      # now in GHZ
         det = np.linalg.det(axes)
         if det < 0:
@@ -2238,12 +1531,6 @@ def minimize_RMSD_rotation(G, Gref):
     def unitX(self):
         # return (tuple) of units
         return (self.units,)
-    def to_dataframe(self):
-        # return the coordinates in a DataFrame
-        [els, xyz] = self.separateXYZ()
-        df = pd.DataFrame({'el': els})
-        df[['x', 'y', 'z']] = xyz
-        return df
     def print(self, numbering=None):
         # printing routine
         # to number the atoms from N, set numbering=N
@@ -2309,12 +1596,6 @@ def minimize_RMSD_rotation(G, Gref):
                 # print to stdout
                 print(self.XmolXYZ(comment=comment))
         return
-    def printMOL(self, fname, title=''):
-        # write an MDL MOL file
-        molstr = self.to_MOL(title=title)
-        with open(fname, 'w') as F:
-            F.write(molstr)
-        return
     def separateXYZ(self):
         # return a list with two elements: 
         #   [element symbols]; [array of cartesian triples]
@@ -2361,8 +1642,8 @@ def minimize_RMSD_rotation(G, Gref):
             else:
                 self.atom[i].newxyz(triples[i])
         return
-    def stoichiometry(self, ones=True, charge=False, asdict=False):
-        # stoichiometry string
+    def stoichiometry(self, asdict=False):
+        # stoichiometry string (without charge or spin multiplicity)
         # build hash of elements and their atom counts
         acount = {}
         for a in self.atom:
@@ -2372,9 +1653,7 @@ def minimize_RMSD_rotation(G, Gref):
                 acount[a.el] = 1
         if asdict:
             return acount
-        stoich = stoichiometry(acount, ones=ones)
-        if charge and self.charge:
-            stoich += '{:+}'.format(self.charge)
+        stoich = stoichiometry(acount)
         return stoich
     def distance(self, i, j, unit=''):
         # distance between atoms i and j
@@ -2401,81 +1680,6 @@ def minimize_RMSD_rotation(G, Gref):
         else:
             # normalize to specified length
             return normalize(v, norm)
-    def PGrotor(self, i, j):
-        # return information relevant to the hindered rotor problem
-        # following Pitzer and Gwinn 1942
-        retval = {}
-        rotax = self.vec(i, j, norm=1)
-        # find the atoms connected to each end of the rotor axis
-        bondl = self.bonded_list()
-        # delete the bond between the axis atoms to create two pieces
-        bondl[i] = bondl[i][bondl[i] != j]
-        bondl[j] = bondl[j][bondl[j] != i]
-        frags = self.find_fragments(bondedin=bondl)
-        if len(frags) != 2:
-            print_err('', 'need 2 fragments but found {:d} for i={:d} and j={:d}'.format(len(frags),i,j))
-        retval['frags'] = frags
-        # get mass of each piece without axis atoms
-        fmass = []
-        for frag in frags:
-            m = sum([self.atom[k].mass for k in frag if k not in [i,j]])
-            fmass.append(m)
-        retval['fmass'] = fmass
-        # the lighter piece will be called the top
-        rfrag = frags[0]
-        if fmass[1] < fmass[0]:
-            rfrag = frags[1]
-        retval['rfrag'] = rfrag
-        # atom iax is the axis atom within the top; jax is the other one
-        [iax, jax] = [i, j]
-        if j in rfrag:
-            [iax, jax] = [j, i]
-        retval['iax'] = iax
-        # moment of inertia of the top (A_m)
-        Am = 0
-        for iat in rfrag:
-            if iat != iax:
-                r = self.distance(iax, iat)  # hypotenuse
-                a = self.angle(jax, iax, iat, 'radian')  # angle
-                r = r * np.sin(a)  # vertical leg
-                Am += self.atom[iat].mass * r * r
-        retval['Am'] = Am
-        # principal axes/moments of whole molecule
-        Ii, paxes = self.rotational(units=False)[1:]
-        retval['Ii'] = Ii
-        # direction cosines, lambda_i
-        # single-rotor reduced moment is 'Im', eq. (1a) in Pitzer/Gwinn
-        lam = np.zeros(3)
-        Im = 1
-        for i in [0,1,2]:
-            lam[i] = np.dot(paxes[i,:], rotax)
-            Im -= Am * lam[i]**2 / Ii[i]
-        retval['lambda'] = lam
-        retval['Im'] = Am * Im
-        return retval
-    def PitzerGwinnIndices(self, n, V, T, rotordata):
-        # Given torsional symmetry number 'n', 
-        #   barrier height 'V' (dict with 'value' and 'unit'), 
-        #   temperature 'T' (kelvin),
-        #   and rotor data from self.PGrotor(),
-        #   return (V/RT) and (1/Qf) for use in tables by
-        #   Pitzer and Gwinn (1942).
-        # Assume that self.units has not changed since 'rotordata'
-        #   was computed. 
-        vjoule = convert_unit(V, 'kj/mol')  # convert V to kJ/mol
-        V = vjoule['value'] * 1000  # convert V to J/mol
-        vort = V / (RGAS * T)  # V/RT value to return
-        Im = rotordata['Im']
-        # convert mass unit from u (amu) to kg
-        Im = convert_unit({'value': Im, 'unit': 'u'}, 'kg')['value']
-        # convert distance unit (which is squared) first to angstrom
-        Im = convert_unit({'value': Im, 'unit': self.units}, 'ang')['value']
-        Im = convert_unit({'value': Im, 'unit': self.units}, 'ang')['value']
-        # convert ang**2 to m**2
-        Im *= 1.e-20
-        denom = 8 * np.pi**3 * Im * BOLTZMANN * T
-        invQ = PLANCK * n / np.sqrt(denom)
-        return vort, invQ
     def angle(self, i, j, k, unit='degree'):
         # bond (or other) angle defined by atoms i, j, k
         try:
@@ -2505,10 +1709,7 @@ def minimize_RMSD_rotation(G, Gref):
         if ( np.linalg.norm(x) == 0.0) or ( np.linalg.norm(z) == 0.0):
             # something is linear; dihedral is undefined
             return np.nan
-        xz = np.dot(x,z)
-        # avoid mysterious, intermittent arccos() runtime warning
-        xz = np.clip(xz, -1, 1)
-        phi = np.arccos( xz )  # in range [0, pi]
+        phi = np.arccos( np.dot(x,z) )  # in range [0, pi]
         s = np.cross(x, z)  # vector cross-product to get sign of dihedral
         s = np.sign( np.dot(s,b) )  # parallel or antiparallel to b
         phi *= s        # include sign (right-handed definition)
@@ -2559,32 +1760,6 @@ def minimize_RMSD_rotation(G, Gref):
                         # a methyl group; add to list
                         mlist.append( (i, *hlist) )
         return mlist
-    def find_terminal_rotors(self, tol=1.3):
-        '''
-        return a list of rotor descriptions (including methyls)
-        a rotor descrption is [j, i, [k1, k2,...] ], where
-            j is the anchor atom
-            i is the hub atom
-            k1, k2,... are the terminal spoke atoms
-        '''
-        termin = self.assignTerminality(tol=tol)
-        iterm = np.argwhere(termin == 0).flatten()  # terminal atoms
-        # To be a terminal rotor, terminal atoms must be bonded to an
-        #   atom with terminality==1 
-        connex = self.connection_table(tol=tol)
-        blist = np.nonzero(connex[iterm,:])[1]   # atoms bonded to terminal atoms
-        bterm = termin[blist]  # terminality of those atoms
-        i1 = np.nonzero(bterm == 1)  # indices of terminality==1 atoms in 'iterm'
-        # create tuple for each terminal rotor; central atom first
-        rotlist = []
-        for iat in set(blist[i1]):
-            ibond = np.nonzero(blist == iat)
-            # which atom is the rotor's anchor (bonded to iat)?
-            anch = set(np.argwhere(connex[iat]).flatten()) - set(iterm)  # should have only one element
-            jat = anch.pop()
-            trotor = [jat, iat, iterm[ibond].tolist()]
-            rotlist.append(trotor)
-        return rotlist
     def bonded(self, i, j, tol=1.3):
         # return True if bonded, else False (based on distance only) (3/2/10)
         # 'tol' tolerated amount of bond stretching
@@ -2601,476 +1776,7 @@ def minimize_RMSD_rotation(G, Gref):
         # save to attribute variable
         self.bondlist = bonded
         return bonded
-    def list_bonds(self, tol=1.3, maxtry=None, warn=True):
-        '''
-        Return a non-redundant list of all bonds
-        'maxtry' limits how many attempts
-        Return a DataFrame with columns [iatom1, iatom2, elem1, elem2, distance, bond order, ring]
-            'distance' is in current units
-        '''
-        natom = self.natom()
-        '''
-        dfatom = self.to_dataframe()
-        dfatom['atord'] = self.atom_bond_order()  # guesses for bond order of atoms
-        dfatom['blist'] = self.bonded_list()  # atoms withing bonding distance
-        rings = self.rings(tol=tol)
-        ring_atoms = [i for ring in rings for i in ring]
-        dfatom['ring'] = [i in ring_atoms for i in range(natom)]
-        #display(dfatom)
-        '''
-        # collect easy stuff
-        rings = self.rings(tol=tol)
-        ring_atoms = [i for ring in rings for i in ring]
-        atord = self.atom_bond_order(tol=tol)  # guesses for bond order of atoms
-        blist = self.bonded_list(tol=tol)
-        dmat = self.distmat()
-        pairs = []
-        for i1 in range(natom):
-            for i2 in blist[i1]:
-                if i1 < i2:
-                    # each bond appears twice; only list the copy with i1 < i2
-                    pairs.append([i1, i2, self.atom[i1].el, self.atom[i2].el, dmat[i1, i2]])
-        dfbond = pd.DataFrame(data=pairs, columns=['i1', 'i2', 'el1', 'el2', 'dist'])
-        ringbond = [(pr[0] in ring_atoms) and (pr[1] in ring_atoms) for pr in pairs]
-        dfbond['ring'] = ringbond
-        
-        # assume that all H's are singly bonded
-        dfbond['order'] = 0
-        for ibond, pr in enumerate(pairs):
-            if (pr[2] == 'H') or (pr[3] == 'H'):
-                dfbond.at[ibond, 'order'] = 1
-        
-        # examine bonding among the heavy atoms
-        ihh = dfbond[dfbond.order == 0].index  # heavy-heavy bonds (index into 'dfbond')
-        if maxtry is None:
-            # default is number of heavy-heavy bonds, squared
-            # (conjugated systems are challenging)
-            maxtry = len(ihh) ** 2
-        for itry in range(maxtry):
-            dfbond.loc[ihh, 'order'] = 0
-            ibondl = list(ihh) # make disposable copy of list of heavy-heavy bonds
-            bord = np.array(atord)  # make disposable copy
-            # consider connected pairs in random order, to avoid getting stuck with open valences
-            random.shuffle(ibondl)
-            for ib in ibondl:
-                i1 = dfbond.loc[ib, 'i1']
-                i2 = dfbond.loc[ib, 'i2']
-                bmult = min(bord[i1], bord[i2])
-                if bmult > 1:
-                    # decrement unsaturated valences
-                    bord[i1] -= bmult - 1
-                    bord[i2] -= bmult - 1
-                dfbond.loc[ib, 'order'] = bmult
-            # do any unsatisfied valences remain?
-            iunsat = np.nonzero(bord > 1)[0]
-            if not len(iunsat):
-                # all valences are satisfied
-                break
-            # yes, more work to do 
-            for i1 in iunsat:
-                # is it bonded to a potentially hypervalent atom?
-                i2hyp = [i2 for i2 in blist[i1] if often_hypervalent(self.atom[i2].el)]
-                if i2hyp:
-                    # pick one at random
-                    i2 = random.choice(i2hyp)
-                    # add a double bond
-                    ibd = dfbond[(dfbond.i1 == min(i1, i2)) & (dfbond.i2 == max(i1, i2))].index
-                    dfbond.loc[ibd, 'order'] = 2
-                    bord[i1] -= 1
-                    bord[i2] -= 1
-            # after allowing hypervalence, do any unsatisfied valences remain?
-            iunsat = np.nonzero(bord > 1)[0]
-            if not len(iunsat):
-                # all good
-                break
-        else:
-            # reached maximum number of attempts
-            if warn:
-                s = f'Did not satisfy all valencies in {maxtry} attempts'
-                print_err('', s, halt=False)
-        return dfbond
-    def xxxlist_bonds(self, tol=1.3, maxtry=None, warn=True, Cpriority=False):
-        '''
-        Return a non-redundant list of all bonds
-        Each bond is a list: [ (iatom1, iatom2), (elem1, elem2), distance, description ]
-            where 'description' is a text string
-            'distance' is in current units
-        'maxtry' limits how many attempts
-        'Cpriority' start with carbon atoms
-        '''
-        rings = self.rings(tol=tol)
-        ring_atoms = [i for ring in rings for i in ring]
-        atord = self.atom_bond_order(tol=tol)  # guesses for bond order of atoms
-        blist = self.bonded_list(tol=tol)
-        dmat = self.distmat()
-        if maxtry is None:
-            # default is number of multiple bonds, squared
-            # (conjugated systems are challenging)
-            nmult = sum(atord) - len(atord)
-            maxtry = nmult * nmult
-            maxtry = max(maxtry, 2)  # try at least twice
-        for itry in range(maxtry):
-            bord = atord.copy()
-            retval = []
-            # random ordering, to avoid getting stuck with open valences
-            #   in conjugated molecules
-            atlist = list(range(self.natom()))
-            random.shuffle(atlist)
-            if Cpriority:
-                # move all carbon atoms to the front, preserving their order
-                lcp = atlist.copy()
-                clis = []
-                nclis = []
-                for iat in lcp:
-                    if self.atom[iat].el == 'C':
-                        clis.append(iat)
-                    else:
-                        nclis.append(iat)
-                atlist = clis + nclis
-            for iat1 in atlist:
-                elem1 = self.atom[iat1].el
-                inring1 = (iat1 in ring_atoms)
-                at2l = list(blist[iat1])
-                random.shuffle(at2l)
-                for iat2 in at2l:
-                    if iat2 < iat1:
-                        # don't count bonds twice
-                        continue
-                    elem2 = self.atom[iat2].el
-                    inring2 = (iat2 in ring_atoms)
-                    r = dmat[iat1, iat2]  # bond length
-                    descr = ''
-                    if inring1 and inring2:
-                        descr = 'ring'
-                    if (bord[iat1] > 1) and (bord[iat2] > 1):
-                        # multiple bond
-                        bmult = min(bord[iat1], bord[iat2])
-                        # decrement unsaturated valences
-                        bord[iat1] -= bmult - 1
-                        bord[iat2] -= bmult - 1
-                        if descr:
-                            # prepend to existing description
-                            descr = '{:d}; '.format(bmult) + descr
-                        else:
-                            descr = '{:d}'.format(bmult)
-                    retval.append([ (iat1, iat2), (elem1, elem2), r, descr ])
-            # Are there any remaining unsatisfied valencies?
-            nleft = sum(bord) - len(bord)
-            if nleft <= 1:
-                # 0 or 1 left, which is OK
-                break
-        if (nleft > 1):
-            if not Cpriority:
-                # try with Cpriority before announcing failure
-                retval = self.list_bonds(tol=tol, maxtry=maxtry, warn=warn, Cpriority=True)
-            else:
-                if warn:
-                    s = f'Did not satisfy all valencies in {maxtry} attempts'
-                    print_err('', s, halt=False)
-                retval = []
-        return retval
-    def BLC(self, A, a, tol=1.3):
-        # Melius-type bond-length correction as simplified by me (2002)
-        # A = [A11, A12, A22,...] and likewise for a (aka alpha)
-        Amat = from_ltriangle(A)  # convert to symmetric matrix
-        amat = from_ltriangle(a)
-        blist = self.bonded_list(tol=tol)
-        csum = 0
-        for i, bl in enumerate(blist):
-            ni = vpqn(self.atom[i].Z())  # valence princ. q. no. for atom i
-            for j in bl:
-                nj = vpqn(self.atom[j].Z())
-                rij = self.distance(i, j)
-                Aij = Amat[ni-1, nj-1]  # parameters depend upon val. princ. q.n.
-                aij = amat[ni-1, nj-1]
-                c = Aij * np.exp(-aij * rij)
-                csum += c
-        # each bond has been counted twice
-        csum /= 2.
-        return csum
-    def Benson_atom_type(self, detail=1, tol=1.3, warn=True, asdict=False):
-        # Assign an atom type to each atom (see Benson/Cohen chapter in my book)
-        #   E.g., Cd is a double-bonded carbon, Cb is carbon in aromatic ring
-        # 'detail' determines how hard we work here; '1' is default
-        # Return a list unless 'asdict' 
-        if detail not in [0, 1, 2]:
-            print_err('', f'Level of detail = {detail} is not recognized')
-        # 'dfbond' is a DataFrame with columns [i1, i2, el1, el2, dist, ring, order]
-        dfbond = self.list_bonds(tol=tol, warn=warn)
-        elems = [at.el for at in self.atom]  # element symbols
-        bonded = self.bonded_list(tol=tol)  # bonding partners for each atom
-        
-        if detail < 1:
-            # only element symbols for detail == 0
-            if asdict:
-                return list_counts(elems)
-            else:
-                return elems
-
-        ### detail > 0 below ###
-        # find max bond order for each atom and
-        # append 'd' or 't' to element symbol
-        bmult = [0] * self.natom()  # list of max bond orders
-        for i, row in dfbond.iterrows():
-            n = row.order  # nominal bond order
-            bmult[row.i1] = max(n, bmult[row.i1])
-            bmult[row.i2] = max(n, bmult[row.i2])
-        btype = []
-        for el, m in zip(elems, bmult):
-            s = el
-            if m == 2:
-                s += 'd'
-            elif m == 3:
-                s += 't'
-            btype.append(s)
-        # benzene rings (6-membered ring, all atoms double-bonded)
-        rings = self.rings(tol=tol, minimal=True)
-        for ring in rings:
-            if len(ring) != 6:
-                continue
-            alld = True
-            for iat in ring:
-                alld &= (btype[iat][-1] == 'd' or btype[iat][-1] == 'b')
-            if alld:
-                # this ring is aromatic
-                for iat in ring:
-                    btype[iat] = btype[iat].replace('d', 'b')
-        if detail < 2:
-            # that's enough for detail == 1
-            if asdict:
-                return list_counts(btype)
-            else:
-                return btype
-        
-        ### detail > 1 below ###
-        # special moiety "atoms" (CO, CCO for carbonyl, ketene, etc)
-
-        # first create those composed of two atoms
-        for i, row in dfbond.iterrows():
-            (iat1, iat2) = (row.i1, row.i2)
-            # CO honorary atom (carbonyl)
-            if sorted([btype[iat1], btype[iat2]]) == ['Cd', 'Od']:
-                # label the carbon 'CO' and the oxygen '_CO'
-                if btype[iat1] == 'Cd':
-                    [i1, i2] = [iat1, iat2]
-                else:
-                    # the reverse order
-                    [i1, i2] = [iat2, iat1]
-                btype[i1] = 'CO'
-                btype[i2] = '_CO'
-            # NO honorary atom (nitrosyl)
-            if sorted([btype[iat1], btype[iat2]]) == ['Nd', 'Od']:
-                # label the nitrogen 'NO' and the oxygen '_NO'
-                if btype[iat1] == 'Nd':
-                    [i1, i2] = [iat1, iat2]
-                else:
-                    # the reverse order
-                    [i1, i2] = [iat2, iat1]
-                btype[i1] = 'NO'
-                btype[i2] = '_NO'                
-            # SO honorary atom (sulfoxide)
-            if sorted([btype[iat1], btype[iat2]]) == ['Od', 'Sd']:
-                # label the sulfur 'SO' and the oxygen '_SO'
-                if btype[iat1] == 'Sd':
-                    [i1, i2] = [iat1, iat2]
-                else:
-                    # the reverse order
-                    [i1, i2] = [iat2, iat1]
-                btype[i1] = 'SO'
-                btype[i2] = '_SO'                
-                
-        # build upon the two-atom types to create the larger types
-        for i, row in dfbond.iterrows():
-            (iat1, iat2) = (row.i1, row.i2)          
-            # CCO honorary atom (ketene)
-            #   will be CO bonded to Cd and nothing else
-            if sorted([btype[iat1], btype[iat2]]) == ['CO', 'Cd']:
-                if btype[iat1] == 'Cd':
-                    [i1, i2] = [iat1, iat2]
-                else:
-                    [i1, i2] = [iat2, iat1]
-                # i1 is the anchor carbon, i2 is the CO carbon
-                nbd = len(bonded[i2])
-                if nbd != 2:
-                    # the CO carbon must be bonded to exactly two atoms,
-                    #   to eliminate compounds like acrolein
-                    continue
-                # label the anchor carbon 'CCO' and the CO carbon '_CCO'
-                btype[i1] = 'CCO'
-                btype[i2] = '_CCO'
-                # Also relabel the bonded oxygen as '__CCO'; must find it
-                binf2 = list(bonded[i2])
-                binf2.remove(i1)
-                i3 = binf2.pop()  # there should be only one left
-                if btype[i3] == '_CO':
-                    btype[i3] = '__CCO'
-                else:
-                    print_err('', f'Expected atom type _CO but found {btype[i3]}')
-            # NO2 honorary atom (nitro)
-            #   will be nitrosyl bonded to Od
-            if sorted([btype[iat1], btype[iat2]]) == ['NO', 'Od']:
-                if btype[iat1] == 'NO':
-                    [i1, i2] = [iat1, iat2]
-                else:
-                    [i1, i2] = [iat2, iat1]
-                # i1 is the nitrogen, i2 is a new oxygen
-                # label the nitrogen 'NO2' and both oxygens '_NO2'
-                btype[i1] = 'NO2'
-                btype[i2] = '_NO2'
-                # find the other oxygen
-                binf2 = list(bonded[i1])
-                binf2.remove(i2)
-                for i3 in binf2:
-                    if btype[i3] == '_NO':
-                        btype[i3] = '_NO2'
-            # SO2 honorary atom (sulfone)
-            #   will be sulfoxide bonded to Od
-            if sorted([btype[iat1], btype[iat2]]) == ['Od', 'SO']:
-                if btype[iat1] == 'SO':
-                    [i1, i2] = [iat1, iat2]
-                else:
-                    [i1, i2] = [iat2, iat1]
-                # i1 is the sulfur, i2 is a new oxygen
-                # label the sulfur 'SO2' and both oxygens '_SO2'
-                btype[i1] = 'SO2'
-                btype[i2] = '_SO2'
-                # find the other oxygen
-                binf2 = list(bonded[i1])
-                binf2.remove(i2)
-                for i3 in binf2:
-                    if btype[i3] == '_SO':
-                        btype[i3] = '_SO2'
-        
-        # Ph honorary atom (unsubstituted phenyl group)
-        cbset = set([iat for iat, b in enumerate(btype) if b == 'Cb'])
-        hset = set(self.element_indices('H'))
-        for ring in rings:
-            if len(ring) != 6:
-                continue
-            if not (set(ring) <= cbset):
-                # not an aromatic ring
-                continue
-            n_unsub = 0
-            for iat in ring:
-                bset = set(bonded[iat]) # atoms bonded to this Cb
-                if hset.intersection(bset):
-                    n_unsub += 1  # bonded to H
-                else:
-                    icrux = iat   # possible bonding point
-            if n_unsub < 5:
-                # it's a substituted ring, not a phenyl group
-                continue
-            if n_unsub == 6:
-                # this is benzene itself
-                icrux = ring[0]  # arbitrary bonding point
-            for iat in ring:
-                if iat == icrux:
-                    # label this 'Ph'
-                    btype[iat] = 'Ph'
-                else:
-                    # label this '_Ph'
-                    btype[iat] = '_Ph'
-                    # label bonded H '__Ph'
-                    for ih in hset.intersection(set(bonded[iat])):
-                        btype[ih] = '__Ph'
-                        
-        # Cc cumulenic carbon (=C=) (my addition to the list)
-        cdset = set([iat for iat, b in enumerate(btype) if b == 'Cd'])
-        icc = []
-        for iat in cdset:
-            bset = set(bonded[iat]) # atoms bonded to this Cd
-            if bset <= cdset:
-                # this Cd is only bonded to other Cd's (cumulenic)
-                icc.append(iat)
-        # label them 'Cc'
-        for iat in icc:
-            btype[iat] = 'Cc'
-            
-        if asdict:
-            return list_counts(btype)
-        else:
-            return btype
-        
-    def Benson_groups(self, detail=1, tol=1.3, asdict=False, warn=True):
-        # Return a list of Benson-type groups and a list of the focal atoms
-        # preserve atom order (but not index, since some atoms are not listed)
-        # 'detail' is how fine-grained to categorize the ligands
-        # If asdict == True, discard the atom numbering and return groups/counts
-        slist, ilist = self.connected_elems(asdict=True, tol=tol)  # list of dict, list of arrays
-        isel = []  # list of atom indices
-        grps = []  # list of Benson groups
-        # obtain the Benson atom types
-        btype = self.Benson_atom_type(detail=detail, tol=tol, warn=warn)
-        for iat, (stoich, atlis) in enumerate(zip(slist, ilist)):
-            if btype[iat][0] == '_':
-                # a peripheral moiety atom; do not list
-                continue
-            if len(atlis) > 1:
-                # a non-terminal atom, to be listed
-                # format the stoichiometry string in the Benson way
-                bstr = f'{btype[iat]}-'
-                for jat in atlis:
-                    if btype[jat][0] == '_':
-                        # a peripheral moiety atom; do not list
-                        continue
-                    bstr += f'({btype[jat]})'
-                # combine duplicated ligands
-                b2 = bstr.split('-')
-                bstr = b2[0] + '-'
-                s = b2[1].replace('(', ' ').replace(')', ' ').split()
-                u = list_counts(s)  # a dict with counts
-                for k in sorted(u.keys()):
-                    if u[k] > 1:
-                        bstr += f'({k}){u[k]}'
-                    else:
-                        bstr += f'({k})'
-                grps.append(bstr)
-                isel.append(iat)
-        if asdict:
-            # summarize groups and their counts; discard atom numbers
-            aggreg = list_counts(grps)
-            return aggreg
-        return grps, isel
-    def Benson_bonds(self, detail=1, tol=1.3, warn=True):
-        # return a dict of types and numbers of bonds between Benson atoms
-        lbond = []  # list of bonds (str)
-        if detail == 0:
-            # special case: count multiple bonds multiple times
-            dfbond = self.list_bonds(warn=warn)
-            for irow, row in dfbond.iterrows():
-                els = [row.el1, row.el2]
-                bstr = '-'.join(sorted(els))  # el-el string
-                # get nominal bond order
-                n = row.order
-                for i in range(n):
-                    lbond.append(bstr)
-        else:
-            # detail > 0
-            atype = self.Benson_atom_type(detail=detail, tol=tol, warn=warn)
-            blist = self.bonded_list(tol=tol)  # list of arrays of bonded atoms
-            for i, jlis in enumerate(blist):
-                A = atype[i]
-                if A[0] == '_':
-                    # ignore subordinated atoms
-                    continue
-                for j in jlis:
-                    if j > i:
-                        # don't cound bonds twice
-                        continue
-                    B = atype[j]
-                    if B[0] == '_':
-                        continue
-                    lbond.append('-'.join(sorted([A, B])))
-        # convert list to dict
-        bcount = list_counts(lbond)
-        return bcount
-    def maxZ(self):
-        # return the largest atomic number in the molecule
-        zmax = 0
-        for a in self.atom:
-            zmax = max(zmax, a.Z())
-        return zmax
-    def distmat(self, unit='', variant='', verbose=False):
+    def distmat(self, unit='', variant=''):
         # 2D array of interatomic distances (distance matrix )
         # use unit if specified
         # if variant = 'interfragment', zero out all distances
@@ -3079,12 +1785,10 @@ def minimize_RMSD_rotation(G, Gref):
         dmat = cdist(xyz, xyz, metric='euclidean')
         if (unit == 'angstrom') and (self.units == 'bohr'):
             dmat *= BOHR  # convert bohr to angstrom
-            if verbose:
-                print('>>> dmat from bohr to angstrom')
+            print('>>> dmat from bohr to angstrom')
         if (unit == 'bohr') and (self.units == 'angstrom'):
             dmat /= BOHR  # convert angstrom to bohr
-            if verbose:
-                print('>>> dmat from angstrom to bohr')
+            print('>>> dmat from angstrom to bohr')
         if variant == 'interfragment':
             # intended only for nonbonded complexes
             frags = self.find_fragments()
@@ -3097,60 +1801,15 @@ def minimize_RMSD_rotation(G, Gref):
                     for j in frag:
                         dmat[i, j] = 0.
         return dmat
-    def vdW_distmat(self, minbonds):
-        # return symmetric matrix of interatomic van der Waals distances
-        # zero between atoms that are separated by fewer than
-        #   'minbonds' bonds (choose minbonds=1 to zero only diagonal)
-        rvdw = [a.vdW_radius() for a in self.atom]
-        rmat = np.add.outer(rvdw, rvdw)
-        xconn = self.extended_connection_table()
-        tooclose = np.nonzero(xconn < minbonds)
-        rmat[tooclose] = 0.
-        return rmat
-    def steric_pseudoenergy(self, power=12, rscale=3., minbonds=3):
-        # evaluate a pairwise pseudoenergy = 1 / (Rij/bohr/rscale)**power
-        # atoms must be separated by at least 'minbonds' bonds to interact
-        dmat = self.distmat(unit='bohr')
-        dmat = dmat / rscale
-        np.fill_diagonal(dmat, np.inf)
-        xconn = self.extended_connection_table()
-        tooclose = np.nonzero(xconn < minbonds)
-        dmat[tooclose] = np.inf
-        pmat = np.power(dmat, -power)
-        pe = pmat.sum() / 2  # because all distances are included twice in dmat
-        return pe
-    def xxxsteric_pseudoenergy(self, khar=1, power=12):
-        '''
-        Evaluate a pairwise pseudoenergy:
-            harmonic for Rij < vdW contact distance
-            ~ R**-'power' for larger distance
-        Atoms must be separated by at least 3 bonds to interact
-        '''
-        vdwmat = self.vdW_distmat(minbonds=0) # in angstrom, including diagonal
-        dmat = self.distmat(unit='angstrom')
-        dmat = dmat / vdwmat  # scale to vdW distance
-        dmat = dmat - 1  # negative for < vdW
-        pmat = np.zeros_like(dmat) # pairwise pseudoenergies
-        short = np.nonzero(dmat < 0)
-        pmat[short] = 1 + khar * dmat[short]**2  # harmonic
-        long = np.nonzero(dmat >= 0)
-        pmat[long] = (1 + dmat[long]) ** -power  # LJ-like
-        # zero the unwanted (diagona and too close) interactions
-        xconn = self.extended_connection_table()
-        tooclose = np.nonzero(xconn < 3)
-        pmat[tooclose] = 0
-        pe = pmat.sum() / 2  # because all distances are included twice in dmat
-        return pe
     def distances_to(self, point):
         # return list of atom distances to specified point in space
         # also the distance from COM to the point
         dcom = distance(self.COM(), point)
         dist = [a.distance_to(point) for a in self.atom]
         return dist, dcom
-    def connection_table(self, tol=1.3, bondlength=False):
+    def connection_table(self, tol=1.3):
         # return a connection table:  a 2D array indicating bonded distances (= 0 or 1)
         # 'tol' is bond-stretch tolerance
-        # if 'bondlength', instead of just '1', return the bond length (angstrom)
         dmat = self.distmat(unit='angstrom') / tol
         connex = np.zeros_like(dmat, dtype=int)
         for i in range(self.natom()):
@@ -3159,65 +1818,9 @@ def minimize_RMSD_rotation(G, Gref):
                 if dmat[i][j] < r0_ref(self.atom[i].el, self.atom[j].el):
                     connex[i][j] = 1
                     connex[j][i] = 1
-        if bondlength:
-            # convert '1's to actual distance
-            dmat *= tol
-            connex = connex * dmat
         return connex
-    def nbonds(self, tol=1.3):
-        # number of bonds, as identified by distance
-        n2 = self.connection_table(tol).sum()
-        nbond = int(np.round(n2/2))
-        return nbond
-    def atom_bond_order(self, tol=1.3):
-        # Guess which atoms have multiple bonding
-        # Bonds are identified by distance
-        # Returned codes: 1 = singly-bonded, 2=doubly, 3=triply
-        # code < 1 indicates hypervalency
-        conn = self.connection_table(tol=tol)
-        nbond = conn.sum(axis=0)  # number of atoms bonded to each atom
-        atlist = self.separateXYZ()[0]
-        full = np.array([max_valence(el) for el in atlist])
-        unsat = full - nbond  
-        # 'unsat' is the number of bonds "missing"
-        #   1 = doubly bonded, 2 = triply bonded
-        if (unsat < 0).any():
-            # hypervalent atoms
-            for i, el in enumerate(atlist):
-                if (unsat[i] < 0) and often_hypervalent(el):
-                    # allow its valence to increase by a multiple of 2 (crude)
-                    unsat[i] = (unsat[i] + 6) % 2
-        bmult = [(n+1) for n in unsat]
-        return bmult
-    def to_MOL(self, title='', tol=1.3, warn=True):
-        # return an MDL MOL representation, as a string
-        # 'buf' is a list of lines
-        # header block
-        buf = [title, ' output from chem_subs.Geometry.to_MOL()', '']
-        # counts line
-        natom = self.natom()
-        dfbond = self.list_bonds(warn=warn)
-        nbond = len(dfbond)
-        line = ('{:>3d}'*11 + ' V2000').format(natom, nbond, *[0]*8, 999)
-        buf.append(line)
-        # atoms block 
-        [els, xyzs] = self.separateXYZ()
-        fmt = '{:10.4f}'*3 + ' {:2s}' + '{:>3d}'*12
-        for el, xyz in zip(els, xyzs):
-            line = fmt.format(*xyz, el, *[0]*12)
-            buf.append(line)
-        # bonds block
-        for i, row in dfbond.iterrows():
-            bord = row.order  # bond order
-            iat1 = row.i1 + 1  # MOL format counts from 1, not 0
-            iat2 = row.i2 + 1
-            line = ('{:>3d}'*7).format(iat1, iat2, bord, 0, 0, 0, 0)
-            buf.append(line)
-        buf.append('M  END')
-        return '\n'.join(buf)
-    def connected_elems(self, tol=1.3, asdict=False):
+    def connected_elems(self, tol=1.3):
         # return a list of connected atoms formatted as stoichiometric string
-        #   (alternatively, as a dict)
         # and a list of bonded atoms (by index) 
         connex = self.connection_table(tol=tol)
         slist = []
@@ -3230,21 +1833,14 @@ def minimize_RMSD_rotation(G, Gref):
                     adict[self.atom[j].el] += 1
                 except:
                     adict[self.atom[j].el] = 1
-            if asdict:
-                slist.append(adict)
-            else:
-                slist.append(stoichiometry(adict))
+            slist.append(stoichiometry(adict))
             ilist.append(jlist)
         return slist, ilist
-    def extended_connection_table(self, tol=1.3, connex=None):
+    def extended_connection_table(self, tol=1.3):
         # return a 2D array where A_ij is the number of bonded
         #   links to get from atom i to atom j
         # Zeros on the diagonal and for unconnected atom pairs
-        # 'connex' is a plain connection table
-        if connex is None:
-            xconn = self.connection_table(tol)
-        else:
-            xconn = connex.copy()
+        xconn = self.connection_table(tol)
         natom = xconn.shape[0] 
         changed = True
         nbond = 1
@@ -3557,8 +2153,8 @@ def minimize_RMSD_rotation(G, Gref):
         # find all bonds between non-terminal atoms
         nonterm = np.where(term)[0]
         subconn = np.transpose(connex[nonterm])[nonterm]
-        #ntors = subconn.sum() // 2  # number of torsions
-        #print('Found {:d} torsions'.format(ntors))
+        ntors = subconn.sum() // 2  # number of torsions
+        print('Found {:d} torsions'.format(ntors))
         # make list of central atom pairs
         pairs = []
         (ilist, jlist) = np.where(subconn)
@@ -3567,48 +2163,11 @@ def minimize_RMSD_rotation(G, Gref):
             if i < j:
                 # don't include a bond twice
                 pairs.append([nonterm[i], nonterm[j]])
-        #print('pairs:', pairs)
-        return pairs
-    def free_torsions(self, tol=1.3):
-        '''
-        Find all bonds that could be free torsions
-        A bond that centers a proper dihedral angle and that
-          disconnects the two atoms when severed
-        Return a list of rotor descriptions
-        Return a list of duples, where each
-          duple[0] = [i, j] are the atoms in the bond
-          duple[1] = [ [ilist], [jlist] ] are the lists of atoms
-            connected to the i and to j (should be disjoint)
-        '''
-        tors = self.torsions(tol=tol)
-        selem, ilem = self.connected_elems()  # list of connected atoms
-        connex = self.connection_table()
-        retval = []
-        for t in tors:
-            # delete the bond between these atoms
-            conx = connex.copy()
-            conx[t[0], t[1]] = 0
-            conx[t[1], t[0]] = 0
-            # are the two atoms still connected?
-            xcon = self.extended_connection_table(connex=conx)
-            if xcon[t[0], t[1]] != 0:
-                # two atoms are still connected (rings)
-                continue
-            # the two atoms are not otherwise connected (good)
-            conxlist = [np.argwhere(xcon[i,:]).flatten().tolist() for i in t]
-            freet = (t, conxlist)
-            retval.append(freet)
-        return retval
+        print('pairs:', pairs)
     def bounding_sphere(self):
         # return the center and radius of a "smallest" sphere enclosing the nuclei
         xyz = self.separateXYZ()[1]
         return small_enclosing_sphere(xyz)
-    def Ztot(self):
-        # return the sum of atomic numbers
-        ztot = 0
-        for at in self.atom:
-            ztot += at.Z()
-        return ztot
 ##
 class LabeledGeometry(Geometry):
     # like a Geometry, but composed of LabeledAtom instead of Atom
@@ -3648,336 +2207,6 @@ class LabeledGeometry(Geometry):
         # return the atom labels as a list
         labels = [a.label for a in self.atom]
         return labels
-    def sortByLabel(self):
-        # order atoms by increasing value of label
-        labels = self.getLabels()
-        idx = np.argsort(labels)
-        neworder = [self.atom[i] for i in idx]
-        self.atom = neworder
-        return
-    def rotateTorsion(self, ispokes, ihub, iaxle, angle, unit='radian'):
-        # rotate part of (atoms[ispokes]) about the center atom[ihub]
-        # the rotational axis is atom[ihub]-atom[iaxle]
-        # the rotational angle = angle (in 'unit' of radian or degree)
-        # return a LabeledGeometry() object with atoms sorted by label
-        if unit == 'degree':
-            angle = np.radians(angle)
-        elif unit != 'radian':
-            print_err('', f'angle unit of "{unit}" is not allowed')
-        ifixed = [i for i in range(self.natom()) if i not in ispokes]
-        # translate a copy so that 'hub' is at the origin
-        Gcopy = self.copy()
-        Gcopy.translate(-self.atom[ihub].xyz)
-        axis = Gcopy.vec(iaxle, ihub, norm=angle)  # length is desired angle
-        Gpart = Gcopy.subMolecules([ifixed, ispokes])
-        rquat = quaternion.from_rotation_vector(axis)
-        Gpart[1].rotate_quat(rquat)
-        # re-assemble the two parts and sort atoms by label
-        Gpart[0].append(Gpart[1])
-        Gpart[0].sortByLabel()
-        # translate back to original position
-        Gpart[0].translate(self.atom[ihub].xyz)
-        return Gpart[0]
-##
-def PitzerGwinnTables(vort, invQ):
-    # return interpolated values from Pitzer & Gwinn 1942, 
-    #   tables III (entropy), V (enthalpy content) and VI (Cp)
-    # also convert units:  S and Cp from cal to J, ddH from cal to kJ
-    # Relies upon CSV files: PitzerGwinnTabx.csv (x = 3,5,6)
-    # Only interpolates within rectangular blocks without NaN
-    #   otherwise returns nan
-    BIN_DIR = '/home/irikura/bin3dev/'
-    BIN_DIR = './'  # does this work?
-    retval = {}
-    for t in [3, 5, 6]:
-        # read the Table from disk
-        df = pd.read_csv(BIN_DIR + 'PitzerGwinnTab{:d}.csv'.format(t), index_col=0).astype(float)
-        df.columns = df.columns.astype(float)
-        # first try dropping columns with nan
-        df_defined = df.dropna(axis=0)
-        x = df_defined.columns.values.astype(float)
-        y = df_defined.index.values.astype(float)
-        z = df_defined.values.astype(float)
-        f = interpolate.interp2d(x, y, z, kind='cubic', bounds_error=True)
-        try:
-            znew = f(invQ, vort)[0]
-        except ValueError:
-            # out of bounds; try dropping columns with nan instead of rows
-            df_defined = df.dropna(axis=1)
-            x = df_defined.columns.values.astype(float)
-            y = df_defined.index.values
-            z = df_defined.values.astype(float)
-            f = interpolate.interp2d(x, y, z, kind='cubic', bounds_error=True)
-            try:
-                znew = f(invQ, vort)[0]
-            except ValueError:
-                # out of bounds; give up unless you want to code something better
-                znew = np.nan
-        # convert cal to J
-        retval['Tab{:d}'.format(t)] = znew * CALORIE
-    return retval
-##
-
-class Cube(object):
-    # for a density "cube file", as produced by Gaussian and other codes
-    def __init__(self, cubefilename):
-        # Read a cube file and create an object
-        iline = 0
-        comment = []  # list of two comment lines
-        npt = []  # number of points along each edge
-        edge = []  # rows are increment directions
-        atno = []  # atomic numbers (Z)
-        coord = []  # atomic coordinates (bohr)
-        units = 'bohr'
-        with open(cubefilename) as F:
-            oneline = []  # buffer for a full line along Z direction
-            for line in F:
-                field = line.split()
-                if iline < 2:
-                    # comment lines
-                    comment.append(line)
-                elif iline == 2:
-                    # read number of atoms and coordinate origin
-                    natom = int(field[0])
-                    origin = np.array([float(field[i]) for i in (1,2,3)])
-                elif iline < 6:
-                    # read edge count and direction
-                    npt.append(int(field[0]))
-                    edge.append(np.array([float(field[i]) for i in (1,2,3)]))
-                    if len(npt) == 3:
-                        # create array for density data
-                        npt = np.array(npt)
-                        if npt[0] < 0:
-                            # units are angstrom
-                            units = 'angstrom'
-                            npt *= -1
-                        cube = np.zeros(npt)
-                        idx = [0,0]  # counters along X and Y
-                elif iline < 6 + natom:
-                    # read Z and position of an atom
-                    atno.append(int(field[0]))
-                    coord.append(np.array([float(field[i]) for i in (2,3,4)]))
-                else:
-                    # read density data
-                    if len(field) + len(oneline) > npt[2]:
-                        # starting a new line along Z
-                        # save the old one
-                        cube[idx[0], idx[1], :] = np.array(oneline, dtype=float)
-                        oneline = field
-                        # increment counters
-                        idx = increm_two(idx, npt)
-                    else:
-                        # add to current line along Z
-                        oneline.extend(field)
-                iline += 1
-            # save the last line along Z
-            cube[idx[0], idx[1], :] = np.array(oneline, dtype=float)
-        # create the Cube object
-        self.file_lines = iline   # number of lines read from file
-        self.npt = npt  # triple of number of points along each direction
-        self.edge = np.array(edge)   # displacment vectors (one voxel)
-        self.density = np.array(cube)
-        self.molecule = Geometry(atno, coord, intype='2lists', units=units)
-        self.unit = units
-        self.origin = origin
-        self.comment = comment
-    def density_from_spheres(self, r):
-        # given a list of atomic radii, replace the density with the sum
-        # of hard spheres
-        # 'r' is list of radii; length of 1 for all the same
-        # lazy: no checking of distance units
-        self.comment[1] = 'Generated from hard-sphere atoms\n'
-        natom = self.molecule.natom()
-        if len(r) != natom:
-            # use same radius for all atoms
-            rad = [r[0]] * natom
-        else:
-            rad = r
-        # zero the density
-        self.density = np.zeros_like(self.density)
-        # squared lengths of basis vectors
-        esq = np.einsum('ij,ij->i', self.edge, self.edge)
-        # plain lengths
-        elen = np.sqrt(esq)
-        # get atomic positions in grid coordinates (not rounded)
-        atijk = self.atoms_ijk(rounded=False)
-        for iat in range(natom):
-            # don't bother with radii less than zero
-            if rad[iat] <= 0:
-                continue
-            aijk = atijk[iat]
-            dmax = rad[iat] / elen  # displacement limits
-            rad2 = rad[iat] ** 2
-            for dx in np.arange(-dmax[0], dmax[0]):
-                # find nearest grid value
-                ix = np.rint(dx + aijk[0]).astype(int)
-                xdist = abs(aijk[0] - ix)
-                #print('xdist =', xdist, 'dmax[0] =', dmax[0])
-                if xdist > dmax[0]:
-                    # too far away already
-                    continue
-                # y direction must be closer
-                xdist *= elen[0]  # convert from grid units to bohr
-                yresid2 = rad2 - xdist ** 2
-                dmax[1] = np.sqrt(yresid2) / elen[1]
-                for dy in np.arange(-dmax[1], dmax[1]):
-                    iy = np.rint(dy + aijk[1]).astype(int)
-                    ydist = abs(aijk[1] - iy)
-                    if ydist > dmax[1]:
-                        # too far away already
-                        continue
-                    # z direction must be even closer
-                    ydist *= elen[1]  # convert distance to real units
-                    zresid2 = yresid2 - ydist ** 2
-                    dmax[2] = np.sqrt(zresid2) / elen[2]
-                    for dz in np.arange(-dmax[2], dmax[2]):
-                        iz = np.rint(dz + aijk[2]).astype(int)
-                        zdist = abs(aijk[2] - iz)
-                        if zdist > dmax[2]:
-                            # too far away
-                            continue
-                        # this point is good!
-                        try:
-                            self.density[ix,iy,iz] += 1
-                        except IndexError as e:
-                            pass
-                            #print(str(e))
-        # return the list of radii that were used
-        return rad
-    def write(self, filename, asMO=False):
-        # create a new cube file
-        fmt3 = '{:5d}{:12.6f}{:12.6f}{:12.6f}\n'
-        fmt4 = '{:5d}{:12.6f}{:12.6f}{:12.6f}{:12.6f}\n'
-        natom = self.molecule.natom()
-        if asMO:
-            # appropriate for signed data
-            natom = -natom
-        with open(filename, 'w') as F:
-            for line in self.comment:
-                F.write(line)
-            F.write(fmt3.format(natom,*self.origin))
-            for i in [0,1,2]:
-                F.write(fmt3.format(self.npt[i],*self.edge[i,:]))
-            for at in self.molecule.atom:
-                F.write(fmt4.format(at.Z(), at.Z(), *at.xyz))
-            if asMO:
-                # pretend this is MO #1 of 1
-                F.write('{:5d}{:5d}\n'.format(1, 1))
-            for ix in range(self.npt[0]):
-                for iy in range(self.npt[1]):
-                    for iz in range(self.npt[2]):
-                        if (iz > 0) and ((iz % 6) == 0):
-                            F.write('\n')
-                        F.write('{:13.5e}'.format(self.density[ix,iy,iz]))
-                    F.write('\n')
-        return
-    def nvoxel(self):
-        # return number of voxels (points) in the cube
-        return np.prod(self.density.shape)
-    def voxel_vol(self):
-        # return volume of a single voxel
-        return np.linalg.det(self.edge) 
-    def volume(self):
-        # return total volume of cube, with cubic units
-        cubevol = self.nvoxel() * self.voxel_vol()
-        return cubevol, '{:s}**3'.format(self.unit)
-    def total_density(self):
-        # return the total density
-        tot = self.voxel_vol() * self.density.sum()
-        return tot
-    def vol_ge(self, thresh, return_npt=False):
-        # return the volume where density >= thresh, with cubic units
-        # count the number of points >= the threshold
-        nhigh = (self.density >= thresh).sum()
-        vol, u = self.volume()
-        highvol = vol * (nhigh / self.nvoxel())
-        if return_npt:
-            # also return the number of points above threshold
-            return highvol, u, nhigh
-        else:
-            return highvol, u
-    def xyz2ijk(self, xyz, rounded=True):
-        # given coordinate triple, return corresponding indices into grid
-        # return floats if rounded==False
-        grd = xyz - self.origin
-        # squares of basis vectors
-        esq = np.einsum('ij,ij->i', self.edge, self.edge)
-        # dot products of xyz with basis vectors
-        dotp = self.edge.dot(grd)
-        retval = dotp / esq
-        if rounded:
-            retval = np.rint(retval).astype(int)
-        return retval
-    def atoms_ijk(self, rounded=True):
-        # return list of coordinate triples for atom positions in grid
-        # coordinates
-        retval = []
-        for at in self.molecule.atom:
-            retval.append(self.xyz2ijk(at.xyz, rounded=rounded))
-        return retval
-    def atom_radii(self, thresh):
-        # return list of atomic effective radii for the specified
-        # density threshold
-        # this algorithm requires a cubic grid
-        radii = []
-        if self.edge.sum() != np.trace(self.edge):
-            print('*** atom_radii() requires a cubic grid with Cartesian basis directions')
-            return np.zeros(self.molecule.natom())
-        if self.edge.sum() != 3 * self.edge[0,0]:
-            print('*** atom_radii() requires equal x,y,z displacements')
-            return np.zeros(self.molecule.natom())
-        # grid is satisfactory
-        lowdens = (self.density < thresh)
-        natom = self.molecule.natom()
-        rmin = np.zeros(natom) + np.inf  # list of smallest distance of atom to a low point
-        # find atom locations as nearest grid points
-        atgrid = [self.xyz2ijk(at.xyz) for at in self.molecule.atom]
-        # Find crude radius from searching an expanding cube
-        for iat in range(natom):
-            [i, j, k] = list(atgrid[iat])
-            d = 1
-            while True:
-                idxsrch = np.argwhere(lowdens[i-d:i+d+1, j-d:j+d+1, k-d:k+d+1])
-                print(idxsrch)
-                if len(idxsrch) > 0:
-                    # a low point has been found
-                    print('found low point for atom', iat)
-                    break
-                d += 1
-        return rmin
-##
-def PitzerGwinnCoupling(rotors):
-    # argument is list of dict (one row for each rotor)
-    # return an array of modified moments I_m from PG eqs. (1bc)
-    nrotor = len(rotors)
-    Im = np.zeros(nrotor)
-    for i in range(nrotor):
-        Inew = rotors[i]['Im']
-        for j in range(nrotor):
-            if j != i:
-                # eq (1c) with (m, m') = (i, j)
-                prefactor = rotors[i]['Am'] * rotors[j]['Am']
-                v = rotors[i]['lambda'] * rotors[j]['lambda'] 
-                v = v / rotors[i]['Ii']
-                Lmmp = prefactor * v.sum()
-                # eq (1b)
-                b = Lmmp * Lmmp / rotors[j]['Im']
-                Inew -= b/2
-        Im[i] = Inew
-    return Im
-##
-def increm_two(idx, npt):
-    # increment two nested counters; return None if past the end
-    # last index increments faster
-    # npt[] gives the limits for the counters
-    # return the updated counters idx[]
-    idx[1] += 1
-    if idx[1] >= npt[1]:
-        idx[1] = 0
-        idx[0] += 1
-    if idx[0] >= npt[0]:
-        return None
-    return idx
 ##
 def atomic_weight(iz):
     # return atomic weight given Z (3/21/2012) or elemental symbol (9/16/2014)
@@ -4044,7 +2273,7 @@ def JSdm(P, Q, base=4):
     # P and Q must be same length, except when dict
     # They will be L1-normalized here
     # Return:
-    #   (1) metric (float) (distance)
+    #   (1) metric (float)
     #   (2) messages (list of string)
     #
     message = []
@@ -4308,9 +2537,7 @@ def r0_ref( elem1, elem2 ):
     if elem1 == 'N':
         if elem2 == 'N':
             # N-N bond from N2H4
-            #return 1.4374
-            # N-N bond in ONNO is 1.9834; choose /1.25 here
-            return 1.59
+            return 1.4374
         if elem2 == 'O':
             # N-O bond from NH2OH
             return 1.4481
@@ -4910,7 +3137,7 @@ def FGHodd(x, V, mass):
     return vals, vecs
 ##
 def FGH(x, V, mass, edges=True, silent=False, xmin=None, xmax=None, npt=None,
-        padwidth=0, interp='cubic', Rvec=False):
+        padwidth=0, interp='cubic'):
     # wrapper for FGHodd
     # input units should be atomic units (X, V, mass)
     # interpolate if needed to get odd number of equally spaced points
@@ -4922,7 +3149,6 @@ def FGH(x, V, mass, edges=True, silent=False, xmin=None, xmax=None, npt=None,
     # If xmin or xmax is specified, use it to define a narrower interval
     # make sure the data are odd-numbered and equally spaced
     # 'interp' is method of interpolation: see make_potential_regular()
-    # If 'Rvec', also return the array of bond distances
     xnew, Vnew = make_potential_regular(x, V, 'odd', silent=silent, xmin=xmin,
                                         xmax=xmax, npt=npt, interp=interp)
     # create the padded interval
@@ -4934,15 +3160,9 @@ def FGH(x, V, mass, edges=True, silent=False, xmin=None, xmax=None, npt=None,
         fmax = np.abs(vecs).max(axis=0)
         fend = np.abs(vecs[0,:]) + np.abs(vecs[-1,:])
         ratio = fend / fmax
-        if Rvec:
-            return vals, vecs, ratio, xpad, Vpad, xpad
-        else:
-            return vals, vecs, ratio, xpad, Vpad
+        return vals, vecs, ratio, xpad, Vpad
     else:
-        if Rvec:
-            return vals, vecs, xpad, Vpad, xpad
-        else:
-            return vals, vecs, xpad, Vpad
+        return vals, vecs, xpad, Vpad
 ##
 def compare_interpolation_with_linear(x, y):
     # look between the points; return differences from linear interpolation
@@ -5006,27 +3226,18 @@ def pad_potential(x, y, padwidth):
     # for use by FGH() to "extrapolate" a potential using flat tops 
     # return the modified potential
     # 'padwidth' is the factor by which to extend the input interval
-    #   on both ends.
-    #   If padwidth < 0, then pad with max(yleft, yright) on both ends
-    # input data should be evenly spaced
-    if padwidth == 0:
+    #   on both ends
+    # input data are evenly spaced
+    if padwidth <= 0:
         # do nothing
         return x, y
-    if padwidth > 0:
-        # different pad on left and on right
-        hileft = [y[0]]    # pad value on the left
-        hiright = [y[-1]]  # pad value on the right
-    else:
-        # use the larger pad value on both ends
-        hileft = hiright = [max(y[0], y[-1])]
-        padwidth = abs(padwidth)
     wid = len(x) - 1  # number of intervals input
     nadd = int(wid * padwidth)  # number of points to add at each end
     dx = x[1] - x[0]
     xleft = x[0] - dx * np.flip(np.arange(1, nadd+1))
     xright = x[-1] + dx * np.arange(1, nadd+1)
-    yleft = hileft * nadd
-    yright = hiright * nadd
+    yleft = [y[0]] * nadd
+    yright = [y[-1]] * nadd
     xnew = np.concatenate((xleft, x, xright))
     ynew = np.concatenate((yleft, y, yright))
     return xnew, ynew
@@ -5051,7 +3262,7 @@ def parabfit(X, Y):
 ##
 def parabmin(X, Y, params=False):
     # OBSOLETED by polymin() 
-    # find the minimum by fitting the lowest points to a parabola
+    # find the minimum by fitting the lowest point to a parabola
     # If params==True, return the values of the fitting constants a,b,c
     #    y = a*x*x + b*x + c
     if len(X) != len(Y):
@@ -5087,9 +3298,8 @@ def parabmin(X, Y, params=False):
         return xmin, ymin
 ##
 def polymin(X, Y, order=4, real=True):
-    # Given (energy) points (e.g., from lowest_points(x,y,5)), 
-    #   fit to an 'order'-order polynomial, then
-    # find the minimum point(s) of the fitted polynomial. 
+    # Given (energy) points, fit to an 'order'-order polynomial.
+    # Find the minimum point(s) of the fitted polynomial. 
     # Return (xmin, ymin) at the minimum(s).
     #   Limit to real-valued xmin if 'real'==True.
     nppoly = np.polynomial.polynomial
@@ -5114,28 +3324,8 @@ def polymin(X, Y, order=4, real=True):
     return xmin, ymin
 ##
 def lowest_points(x, V, n):
-    # Given points (x, V), return the 'n' points of lowest V.
-    # 'V' may be a function or a list/array of energy values
-    n = int(n)
-    if not callable(V) and (len(x) != len(V)):
-        print_err('', 'Unequal numbers of x and V values')
-    if n > len(x):
-        print_err('', '{:d} points requested but only {:d} available'.format(n, len(x)))
-    # find the points of lowest energy
-    X = np.array(x)
-    if callable(V):
-        Y = np.array([V(r) for r in X])
-    else:
-        Y = np.array(V)
-    idx = np.argsort(Y)[:n]
-    xp = X[idx].copy()
-    Vp = Y[idx].copy()
-    # sort them by increasing 'x'
-    idx = np.argsort(xp)
-    return xp[idx], Vp[idx]
-##
-def lowest_points_old(x, V, n):
-    # Given points (x, V), return the 'n' points of lowest V.
+    # Given a potential energy function points (x, V), return
+    #   the 'n' points of lowest energy 
     # 'V' may be a function or a list/array of energy values
     n = int(n)
     if not callable(V) and (len(x) != len(V)):
@@ -5144,87 +3334,44 @@ def lowest_points_old(x, V, n):
         print_err('', '{:d} points requested but only {:d} available'.format(n, len(x)))
     # find the points of lowest energy
     if callable(V):
-        y = np.array([V(r) for r in x])
+        y = [V(r) for r in x]
         idx = np.argsort(y)[:n]
     else:
         idx = np.argsort(V)[:n]
     xp = x[idx].copy()
     if callable(V):
-        Vp = y[idx].copy()
-        #Vp = np.array([V(r) for r in xp])
+        Vp = np.array([V(r) for r in xp])
     else:
         Vp = np.array(V)[idx].copy()
     # sort them by increasing 'x'
-    print('>>>xp =', xp)
-    print('>>>Vp =', Vp)
     idx = np.argsort(xp)
     return xp[idx], Vp[idx]
 ##
-def fit_polynomial_coefficients(x, y, N):
-    # Fit x, y to a polynomial of degree N
-    # Return the fitted constants (a0, ..., aN)
-    nppoly = np.polynomial.polynomial
-    fit_poly = nppoly.Polynomial.fit(x, y, N)
-    return fit_poly.convert().coef
-##
-def diatomic_rotational_constants(R, V, mass, omega=0, vmax=1, Nmax=5,
-        psitol=1.e-6, silent=False, nfgh=51, padwidth=0, 
-        interp='cubic', ref='phys'):
-    '''
-    Given a diatomic potential, compute rovibrational levels and determine
-        the pure rotational constants for each value of v (vibrational q.n.)
-    Return a DataFrame of constants
-    Input in atomic units
-    Output in cm-1, angstrom
-    '''
-    EvJ, Emin, Re = rovib_levels(R, V, mass, omega=omega, vmax=vmax, Nmax=Nmax, 
-            psitol=psitol, silent=silent, nfgh=nfgh, padwidth=padwidth, 
-            interp=interp, ref=ref)
-    cols = ['T', 'B', '-D', 'H', 'L']
-    if Nmax > 4:
-        cols = cols + [f'X{i}' for i in range(5, Nmax+1)]
-    else:
-        cols = cols[:Nmax+1]
-    Nvals = np.arange(Nmax+1)
-    Jvals = Nvals + omega
-    JJvals = Jvals * (Jvals + 1) - omega*omega
-    constants = np.zeros((vmax+1, Nmax+1))
-    for v in range(vmax+1):
-        constants[v,:] = np.polynomial.polynomial.polyfit(JJvals, EvJ[v,:], Nmax)
-    df = pd.DataFrame(columns=cols, data=constants)
-    return df
-##
-def diatomic_spectr(R, V, mass, omega=0, psitol=1.e-6, silent=False, nfgh=51, padwidth=0, 
-                    interp='cubic', ref='phys'):
-    '''
-    Given a diatomic potential, determine some spectroscopic constants using simplified fitting
-    Input units are a.u.
-    Output units are cm**-1, angstrom
-    Return a dict of constants
-    'E0' is variational and is inconsistent with (we, wexe)
-    'w0' is returned but is redundant with (we, wexe)
-    'psitol' is tolerance for FGH periodicity artifacts
-    'padwidth' is how much to extend the left and right, using
-        the endpoint V-value of the real data. This is to keep 
-        the cyclic copies from interacting. padwidth=1 makes
-        the range 3x wider. 
-    'V' may be a callable function instead of a list/array
-    we and wexe are determined from v=0,1,2 only
-    '''
+def diatomic_spectr(R, V, mass, omega=0, psitol=1.e-6, silent=False, npt=51, padwidth=0, 
+                    interp='cubic'):
+    # given a potential, return some constants of diatomic spectroscopy
+    # input units are a.u.
+    # output units are cm**-1, angstrom
+    # return a dict of constants
+    #    'E0' is variational and is inconsistent with (we, wexe)
+    #    'w0' is returned but is redundant with (we, wexe)
+    # 'psitol' is tolerance for FGH periodicity artifacts
+    # 'padwidth' is how much to extend the left and right, using
+    #    the endpoint V-value of the real data. This is to keep 
+    #    the cyclic copies from interacting. The default padwidth=1
+    #    makes the range 3x wider. 
+    # 'V' may be a function instead of a list/array
+    #
+    # we and wexe determined from v=0,1,2 only
     if omega != 0:
         print_err('', 'Omega not zero--results may be meaningless', halt=False)    
     if not silent:
         print('Wavefunction tail convergence criterion = {:.1e}'.format(psitol))
     constants = {}
-     
-    EvJ, Emin, Re = rovib_levels(R, V, mass, omega, vmax=2, Nmax=2, 
-            ref=ref, psitol=psitol, nfgh=nfgh, padwidth=padwidth, 
-            interp=interp, silent=silent)
-    '''
     fitorder = 4
     (xlow, ylow) = lowest_points(R, V, fitorder+1)
     if callable(V):
-        # find the minimum by continuous means
+        # find the minimum located by continuous means
         res = optimize.minimize_scalar(V, method='bounded', bounds=[xlow[0], xlow[-1]])
         Re = res.x
         Emin = res.fun
@@ -5235,10 +3382,8 @@ def diatomic_spectr(R, V, mass, omega=0, psitol=1.e-6, silent=False, nfgh=51, pa
             print_err('', 'potential has more than one minimum')
         Re = xmin[0]
         Emin = ymin[0]
-    '''
     constants['Re'] = Re * BOHR  # convert to Angstrom
     constants['Emin'] = Emin
-    '''
     # make energies relative to minimum
     if callable(V):
         Vrel = lambda r : V(r) - Emin
@@ -5253,16 +3398,15 @@ def diatomic_spectr(R, V, mass, omega=0, psitol=1.e-6, silent=False, nfgh=51, pa
         else:
             centrifug = Vrel + (J*(J+1)-omega*omega)/(2*mass*R*R)
         cvals, cvecs, ratio, xwfn, ywfn = FGH(R, centrifug, mass, silent=silent,
-                                  npt=nfgh, padwidth=padwidth, interp=interp)
+                                  npt=npt, padwidth=padwidth, interp=interp)
         if np.any(ratio[:3] > psitol):
             # wavefunction is not good enough for lowest 3 states
             print(ratio[:3])
             print_err('', 'sloppy wfn for J = {:d}'.format(J))
-        EvJ[:,Nrot] = cvals[:3]
+        EvJ[:,J] = cvals[:3]
     # convert energy levels to cm**-1
     EvJ *= AU2CM
-    '''
-    # vibrational levels
+    # vibrational constants
     constants['w0'] = EvJ[1,0] - EvJ[0,0]
     constants['E0'] = EvJ[0,0]
     a, b, c = parabfit([0.5, 1.5, 2.5], EvJ[:,0])
@@ -5271,8 +3415,7 @@ def diatomic_spectr(R, V, mass, omega=0, psitol=1.e-6, silent=False, nfgh=51, pa
     # rotational constants
     B = []
     D = []
-    jvals = np.arange(3) + omega  # J = N + Ω
-    jj = jvals * (jvals + 1) - omega*omega
+    jj = [J*(J+1) for J in range(3)]
     for v in range(3):
         a, b, c = parabfit(jj, EvJ[v,:])
         B.append(b)
@@ -5286,32 +3429,20 @@ def diatomic_spectr(R, V, mass, omega=0, psitol=1.e-6, silent=False, nfgh=51, pa
     constants['De'] = c
     return constants
 ##
-def rovib_levels(R, V, mass, omega=0, vmax=2, Nmax=2, ref='phys',
-                 psitol=1.e-6, silent=False, nfgh=51, padwidth=0, interp='cubic',
-                 vectors=False, persist=False):
-    '''
-    Given a potential, return some diatomic rovibrational energies
-    Input units are a.u.
-    Output units are cm**-1 relative to the energy minimum 'ref'
-    Allowed 'ref' values:
-        'phys' = minimum in V_eff with J=omega
-        'pot'  = minimum in V, without centrifugal term
-        'J0'   = eigenvalue with J=0 (may be unphysical)
-        'norot' = lowest eigenvalue without centrifugal term
-    Return values:
-        array of energies E(v, N)/cm-1, where J = N + omega
-        Emin/hartree
-        Rmin/bohr
-    psitol' is tolerance for FGH periodicity artifacts
-    'padwidth' is how much to extend the left and right, using
-       the endpoint V-value of the real data. This is to keep 
-       the cyclic copies from interacting. padwidth=1
-       makes the range 3x wider. 
-    'V' may be a callable function instead of a list/array
-    If 'vectors' is True, also return the eigenvectors and the bond distances
-    If 'persist' is True, instead of failing the wfn tail test, install
-       NaN as the eigenvalue and keep going
-    '''
+def rovib_levels(R, V, mass, omega=0, vmax=2, Nmax=2,
+                 psitol=1.e-6, silent=False, npt=51, padwidth=0, interp='cubic'):
+    # given a potential, return some diatomic rovibrational energies
+    # input units are a.u.
+    # output units are cm**-1 relative to the energy minimum
+    # return values:
+    #       array of energies E(v, N)/cm-1, where J = N + omega
+    #       Emin/hartree
+    # 'psitol' is tolerance for FGH periodicity artifacts
+    # 'padwidth' is how much to extend the left and right, using
+    #    the endpoint V-value of the real data. This is to keep 
+    #    the cyclic copies from interacting. The default padwidth=1
+    #    makes the range 3x wider. 
+    # 'V' may be a function instead of a list/array
     if not silent:
         print('Wavefunction tail convergence criterion = {:.1e}'.format(psitol))
     # compute low-lying levels E(v, J)
@@ -5320,82 +3451,37 @@ def rovib_levels(R, V, mass, omega=0, vmax=2, Nmax=2, ref='phys',
     fitorder = 4
     (xlow, ylow) = lowest_points(R, V, fitorder+1)
     if callable(V):
-        # find the (rotationless) minimum by continuous means
+        # find the minimum located by continuous means
         res = optimize.minimize_scalar(V, bracket=[xlow[0], xlow[-1]])
-        Epot = res.fun
-        Rpot = res.x
+        Emin = res.fun
     else:
         # quartic fit to lowest five points
         (xmin, ymin) = polymin(xlow, ylow, order=fitorder)
         if len(ymin) > 1:
             print_err('', 'potential has more than one minimum')
-        Epot = ymin[0]
-        Rpot = xmin[0]
+        Emin = ymin[0]
+    # make energies relative to minimum
+    if callable(V):
+        Vrel = lambda r : V(r) - Emin
+    else:
+        Vrel = V - Emin
     EvJ = np.zeros((nv, nN))
-    eigvecs = np.zeros((nv, nN)).tolist()
     for Nrot in range(nN):
         J = Nrot + omega
-        if callable(V):
-            centrifug = lambda r : V(r) + (J*(J+1)-omega*omega)/(2*mass*r*r)
-            if Nrot == 0:
-                # find the physical minimum (J = omega)
-                res = optimize.minimize_scalar(centrifug, bracket=[xlow[0], xlow[-1]])
-                Ephys = res.fun
-                Rphys = res.x
+        if callable(Vrel):
+            centrifug = lambda r : Vrel(r) + (J*(J+1)-omega*omega)/(2*mass*r*r)
         else:
-            centrifug = V + (J*(J+1)-omega*omega)/(2*mass*R*R)
-            if Nrot == 0:
-                # find the physical minimum
-                (xlo, ylo) = lowest_points(R, centrifug, fitorder+1)
-                (xmin, ymin) = polymin(xlo, ylo, order=fitorder)
-                if len(ymin) > 1:
-                    print_err('', 'potential has more than one minimum')
-                Ephys = ymin[0]
-                Rphys = xmin[0]
-        cvals, cvecs, ratio, xwfn, ywfn, rvec = FGH(R, centrifug, mass, silent=silent,
-                                  npt=nfgh, padwidth=padwidth, interp=interp,
-                                  Rvec=True)
+            centrifug = Vrel + (J*(J+1)-omega*omega)/(2*mass*R*R)
+        cvals, cvecs, ratio, xwfn, ywfn = FGH(R, centrifug, mass, silent=silent,
+                                  npt=npt, padwidth=padwidth, interp=interp)
         if np.any(ratio[:nv] > psitol):
             # wavefunction is not good enough 
-            if not persist:
-                print('tail ratios:', ratio[:nv])
-                print_err('', 'sloppy wfn for Nrot = {:d}'.format(Nrot))
-            else:
-                # install NaN's, keep going
-                ibad = np.argwhere(ratio > psitol)
-                cvals[ibad] = np.nan
-        EvJ[:,Nrot] = cvals[:nv]
-        for i in range(nv):
-            eigvecs[i][Nrot] = cvecs[:, i]
+            print(ratio[:nv])
+            print_err('', 'sloppy wfn for J = {:d}'.format(J))
+        EvJ[:,J] = cvals[:nv]
     # convert energy levels to cm**-1
-    if ref == 'phys':
-        Emin = Ephys
-        Rmin = Rphys
-    if ref == 'pot':
-        Emin = Epot
-        Rmin = Rpot
-    if ref == 'J0':
-        # find energy of hypothetical (v=0, J=0) level 
-        if callable(V):
-            centrifug = lambda r : V(r) - omega*omega/(2*mass*r*r)
-        else:
-            centrifug = V - omega*omega/(2*mass*R*R)
-        cvals, cvecs, ratio, xwfn, ywfn = FGH(R, centrifug, mass, silent=silent,
-                                  npt=nfgh, padwidth=padwidth, interp=interp)
-        Emin = cvals[0]
-        Rmin = Rpot
-    if ref == 'norot':
-        # find v=0 level without the centrifugal term
-        cvals, cvecs, ratio, xwfn, ywfn = FGH(R, V, mass, silent=silent,
-                                  npt=nfgh, padwidth=padwidth, interp=interp)
-        Emin = cvals[0]
-        Rmin = Rpot
-
-    EvJ = (EvJ - Emin) * AU2CM
-    if vectors:
-        return EvJ, Emin, Rmin, rvec, eigvecs
-    else:
-        return EvJ, Emin, Rmin
+    EvJ *= AU2CM
+    return EvJ, Emin
 ##
 def turnover_limits_potential(R, V, Rmin, interp='cubic', tol=0.001):
     # given a diatomic potential V(R), and approx minimum Rmin,
@@ -5442,7 +3528,7 @@ def classical_turning_points(R, V, mass, omega=0, vmax=1, npt=51,
     # given a potential V(R) and a mass, return the classical
     # turning points for the vibrational levels up to v=vmax
     # also return the location of the minimum (R_e)
-    vlev, emin, rmin = rovib_levels(R, V, mass, vmax=vmax, Nmax=0, nfgh=npt, 
+    vlev, emin = rovib_levels(R, V, mass, vmax=vmax, Nmax=0, npt=npt, 
                               psitol=psitol, interp=interp, padwidth=padwidth,
                               silent=True)
     # restore hartree values
@@ -5464,76 +3550,74 @@ def classical_turning_points(R, V, mass, omega=0, vmax=1, npt=51,
         xprev = root.copy()
     return xturn, xe
 ##
-def diatomic_Dunham(R, V, mass, omega=0, vmax=2, Nmax=2, psitol=1.e-6, 
-                    silent=False, nfgh=51, padwidth=0, interp='cubic',
-                    ref='phys', display='conventional'):
-    '''
-    Given a potential and mass, return some diatomic Dunham constants
-    Input units are a.u.
-    Output units are cm**-1 relative to the energy minimum for J=omega
-    Return values depend upon value of 'display':
-        'conventional': as dict of equivalent conventional constants
-        'dataframe': as dataframe of (k,l) and Y_kl
-        anything else: 2D array of Dunham constants Y(k,l), where k is row/vib
-    'psitol' is tolerance for FGH periodicity artifacts
-    'padwidth' is how much to extend the left and right, using
-        the endpoint V-value of the real data. This is to keep 
-        the cyclic copies from interacting. padwidth=1 makes the
-        range 3x wider. 
-    'V' may be a callable function instead of a list/array
-    Get constants by fitting energy levels, not from Dunham's equations
-    If 'dataframe', return a DataFrame instead of an array
-    '''
-    #if omega != 0:
-    #    print_err('', 'Omega not zero--results may be meaningless', halt=False)
+def diatomic_Dunham(R, V, mass, omega=0, lmax=2, jmax=2, psitol=1.e-6, 
+                    silent=False, npt=51, padwidth=0, interp='cubic',
+                    conventional=True):
+    # given a potential and mass, return some diatomic Dunham constants
+    # input units are a.u.
+    # output units are cm**-1 relative to the energy minimum
+    # return values:
+    #   array of Dunham constants Y(l,j), where l is constant along column
+    #   (if 'conventional'==True) and dict of spectr. constants and values
+    # 'psitol' is tolerance for FGH periodicity artifacts
+    # 'padwidth' is how much to extend the left and right, using
+    #    the endpoint V-value of the real data. This is to keep 
+    #    the cyclic copies from interacting. The default padwidth=1
+    #    makes the range 3x wider. 
+    # 'V' may be a function instead of a list/array
+    # By fitting energy levels, not from Dunham's equations
+    if omega != 0:
+        print_err('', 'Omega not zero--results may be meaningless', halt=False)
     # compute required levels E(v, J)
-    EvJ, Emin, Rmin = rovib_levels(R, V, mass, omega=omega, vmax=vmax,
-            Nmax=Nmax, ref=ref, psitol=psitol, silent=silent, nfgh=nfgh, 
+    EvJ, Emin = rovib_levels(R, V, mass, omega=omega, vmax=lmax, 
+            Nmax=jmax+omega, psitol=psitol, silent=silent, npt=npt, 
             padwidth=padwidth, interp=interp)
-    vvals = np.arange(vmax + 1) + 0.5
-    Nvals = np.arange(Nmax + 1)
+    vvals = np.arange(lmax + 1) + 0.5
+    Nvals = np.arange(jmax + 1)  # does not include omega
     Jvals = Nvals + omega
-    JJvals = Jvals * (Jvals + 1) - omega*omega
-    X, Y = np.meshgrid(vvals, JJvals, copy=False)
-    X = X.flatten()
-    Y = Y.flatten()
-    B = EvJ.T.flatten()
-    A = np.array([X**k * Y**l for k in range(vmax+1) for l in range(Nmax+1)]).T
-    kl = [(k, l) for k in range(vmax+1) for l in range(Nmax+1)]
-    coeff, residsq, rank, s = np.linalg.lstsq(A, B, rcond=None)
-    dfDunham = pd.DataFrame({'(k,l)': kl, 'Y_kl': coeff})
-    # arrange into an array
-    Y = np.zeros((vmax+1, Nmax+1)) + np.nan
-    for k in range(vmax+1):
-        for l in range(Nmax+1):
-            Y[k,l] = dfDunham[dfDunham['(k,l)'] == (k,l)]['Y_kl'].values[0]
-    if display == 'conventional':
+    JJvals = Jvals * (Jvals + 1)
+    Y = np.zeros((jmax+1, lmax+1))
+    # Nrot = 0 fitting
+    pfit = np.polynomial.polynomial.Polynomial.fit(vvals, EvJ[:,0], deg=lmax)
+    coef = pfit.convert().coef
+    Y[0,1:] = coef[1:]
+    for l in range(lmax+1):
+        # v = constant fitting (gives B0, etc., not Be)
+        pfit = np.polynomial.polynomial.Polynomial.fit(JJvals, EvJ[l,:], deg=jmax)
+        coef = pfit.convert().coef
+        Y[1:,l] = coef[1:]
+    # fit the rotatonal constants
+    C = Y.copy()
+    for j in range(1, jmax+1):
+        pfit = np.polynomial.polynomial.Polynomial.fit(vvals, C[j,:], deg=lmax)
+        coef = pfit.convert().coef
+        Y[j:,:-1] = coef[:-1]
+        Y[j,-1] = np.nan
+    if conventional:
         # create dict with traditional constants
-        labels = [ ['Y00', 'we', '-wexe', 'weye', 'weze'], 
+        labels = [ [None, 'we', '-wexe', 'weye', 'weze'], 
                    ['Be', '-alpha', 'gamma'], 
                    ['-De', '-beta', 'delta'],
                    ['Fe'],
                    ['He']
                  ]
         constants = {}
-        for k in range(vmax+1):
-            for l in range(Nmax+1):
+        for j in range(jmax+1):
+            for l in range(lmax+1):
                 try:
-                    lbl = labels[l][k]
-                    if np.isnan(Y[k,l]):
+                    lbl = labels[j][l]
+                    if np.isnan(Y[j,l]):
                         continue
                     # check for negative sign
                     if '-' in lbl:
-                        constants[lbl[1:]] = -Y[k,l]
+                        constants[lbl[1:]] = -Y[j,l]
                     else:
-                        constants[lbl] = Y[k,l]
+                        constants[lbl] = Y[j,l]
                 except:
                     pass
-        return constants
-    elif display == 'dataframe':
-        return dfDunham
+        return Y.T, constants
     else:
-        return Y
+        return Y.T
 ##
 def Brot_to_R(B, mu, reverse=False):
     # convert diatomic rotational constant 'B' to its equivalent bond length
@@ -5565,56 +3649,7 @@ def discrep_BR_VZ(spectr, mass):
     rdiff = RB - spectr['Re']
     return rdiff, zdiff
 ##
-def spline_fit(x, y, kind='cubic', extrap=False):
-    # given discrete (x,y) data, return an interpolating function
-    # handle extrapolation by flat extension (unless extrap==True)
-    # kind:  'akima', 'linear', 'quadratic', 'cubic', 'quartic', 'quintic', 'cubic2'
-    #   'cubic2' is cubic but using UnivariateSpline instead of interp1d
-    iknow = ['akima', 'linear', 'quadratic', 'cubic', 'quartic', 'quintic', 'cubic2']
-    kind = kind.lower()
-    if not kind in iknow:
-        print_err('', 'Unknown interpolation requested: {:s}'.format(kind))
-    if kind == 'akima':
-        fspl = interpolate.Akima1DInterpolator(x, y)
-    elif kind in ['quartic', 'quintic', 'cubic2']:
-        degree = {'quartic': 4, 'quintic': 5, 'cubic2': 3}
-        # must specify s=0 to go through all the points 
-        fspl = interpolate.UnivariateSpline(x, y, k=degree[kind], s=0)
-    else:
-        fspl = interpolate.interp1d(x, y, kind=kind, bounds_error=True)
-    # handle extrapolation
-    if extrap:
-        fx = interpolate.interp1d(x, y, fill_value='extrapolate')
-    def fn(r):
-        if r < np.min(x):
-            if extrap:
-                v = fx(r)
-            else:
-                v = fspl(np.min(x))
-        elif r > np.max(x):
-            if extrap:
-                v = fx(r)
-            else:
-                v = fspl(np.max(x))
-        else:
-            v = fspl(r)
-        return v
-    return np.vectorize(fn)
-##
-def expec_value(Rquant, quant, Rwfn, wfn, npt=500):
-    # Given a rovib wavefunction f(R),
-    #   return <f(R)|quant(R)|f(R)> 
-    # User is responsible for ensuring same units for Rquant and Rwfn
-    f = spline_fit(Rwfn, wfn)  # continuous f(R)
-    fq = spline_fit(Rquant, quant)  # continuous q(R)
-    rgrid = np.linspace(Rquant.min(), Rquant.max(), num=npt)  # interpolation grid
-    fsq = f(rgrid) ** 2  # f(R)**2 on the interpolation grid
-    normsum = fsq.sum()
-    qsum = np.dot(fq(rgrid), fsq)
-    retval = qsum / normsum
-    return retval
-##
-def spline_fit_old(x, y, kind='cubic'):
+def spline_fit(x, y, kind='cubic'):
     # given discrete (x,y) data, return an interpolating function
     # handle extrapolation by flat extension
     # kind:  'akima', 'linear', 'quadratic', 'cubic', 'quartic', 'quintic', 'cubic2'
@@ -5708,9 +3743,9 @@ def fit_diatomic_potential(R, V, method='cubic', transf=None, wt=None,
         else:
             print_err('', 'Unrecognized transformation {:s} requested'.format(str(transf)))
         return s
-    x = np.array(R).astype('float')
+    x = np.array(R)
     x = transform(x)
-    y = np.array(V).astype('float')
+    y = np.array(V)
     # sort 
     idx = np.argsort(x)
     x = x[idx]
@@ -5735,23 +3770,9 @@ def fit_diatomic_potential(R, V, method='cubic', transf=None, wt=None,
     else:
         return fn
 ##
-def find_Rmin(V, rlo, rhi):
-    # given a potential V(R), look between rlo and rhi for a minimum
-    # return Rmin, Vmin
-    res = optimize.minimize_scalar(V, bounds=(rlo, rhi), method='bounded')
-    Vmin = res.fun
-    Rmin = res.x
-    # scipy returns array; try to convert to scalar
-    try:
-        Vmin = float(Vmin)
-        Rmin = float(Rmin)
-    except:
-        pass
-    return Rmin, Vmin
-##
 def guided_fitting(xguide, yguide, xsparse, ysparse, method='cubic', 
                    transf=None, gmethod='cubic', wt=None, residuals=False,
-                   plot=False, xord=2):
+                   plot=False):
     '''
     Use 'gmethod' and 'transf' to get a function describing (xguide, yguide)
         (see fit_diatomic_potential() for their meanings)
@@ -5761,9 +3782,7 @@ def guided_fitting(xguide, yguide, xsparse, ysparse, method='cubic',
     Return the function (ffit + fguide) to describe ysparse(x)
     If resid==True, also return the residuals from the fitting
     If plot==True, also display a plot of the differences and their fitted curve
-        if plot=='trunc', restrict the plot to the sparse range of X 
-    xord is order of polynomial used to extrapolate to R > xsparse
-    Sparse data are assumed ordered by increasing xsparse
+        if plot=='trunc', restrict the plot to the sparse range of 
     '''
     # make into numpy arrays
     xcoarse = np.array(xsparse)
@@ -5780,45 +3799,19 @@ def guided_fitting(xguide, yguide, xsparse, ysparse, method='cubic',
         fguide = fit_diatomic_potential(xg, yg, method=gmethod, transf=transf)
     ydiff = ycoarse - fguide(xcoarse)
     # fit the differences between the sparse and guiding potentials
-    # ffit() is for R <= Rmax and ffitex() is for R > Rmax
-    #   add fguide(R) to either to get the guided potential
     ffit = fit_diatomic_potential(xcoarse, ydiff, wt=wt, method=method, 
                                   transf=transf, residuals=residuals)
     if residuals:
         (ffit, resid) = ffit
-    if xord > 0:
-        ffitex = fit_diatomic_potential(xcoarse[-xord-1:], ydiff[-xord-1:], 
-                    method=xord, transf=transf, residuals=False)
-    else:
-        # just a constant for xord=0
-        ffitex = lambda x: ydiff[-1]
-    def fguided(x):
-        ulim = xcoarse.max()
-        if np.ndim(x) == 0:
-            # x is scalar
-            if x > ulim:
-                yfit = ffitex(x)  # extrapolate to large R
-            else:
-                yfit = ffit(x)  # this could extrapolate to small R
-        else:
-            # x is list, etc.
-            xa = np.array(x)
-            yfit = ffit(xa)     # without extrapolation
-            idx = np.where(xa > ulim)[0]  # indices of x > Rmax
-            if len(idx):
-                # use some extrapolation
-                yfit[idx] = ffitex(xa[idx])
-        y = yfit + fguide(x)
-        return y
+    fguided = lambda x: ffit(x) + fguide(x)
     if plot:
         # plot the sparse differences along with the fitted curve
-        plt.scatter(xcoarse, ydiff, alpha=0.3)
-        plt.plot(xg, fguided(xg) - yg)
+        plt.scatter(xcoarse, ydiff)
+        plt.plot(xg, ffit(xg))
         plt.ylabel('ysparse - yguide')
         if plot == 'trunc':
             plt.xlim([xcoarse.min(), xcoarse.max()])
             plt.ylim([ydiff.min(), ydiff.max()])
-        plt.title('Differences and their fitted curve')
         plt.show()
     if residuals:
         return fguided, resid
@@ -5938,6 +3931,7 @@ def random_rotation_matrix():
     rotmat = -np.matmul(H, Rz)  # I had to change the sign!
     return rotmat
 ##
+'''
 def random_rotation_quat(axis=None):
     # return a random rotation quaternion around specified axis
     rng = np.random.default_rng()
@@ -5961,6 +3955,7 @@ def rotated_RMSD(sphangle, G, Gref):
     d = RMSD(Gc, Gref)
     return d
 ##
+'''
 def small_enclosing_sphere(points):
     # find a small sphere that encloses the points
     # return the center and radius of the sphere
@@ -6043,22 +4038,16 @@ def Debye_Clausius_Mosotti(MW, rho, dipole, T, alpha=None, epsilon=None):
         epsilon = (1 + 2*x) / (1 - x)
         return epsilon, 'epsilon'
 ##
-def list_counts(alist, sortorder=False):
+def list_counts(alist):
     # return a dict of list elements and their counts
-    # if 'sortorder', put the keys in sorted() order
     ct = {}
-    if sortorder:
-        for elem in sorted(set(alist)):
-            ct[elem] = alist.count(elem)
-    else:
-        for elem in set(alist):
-            ct[elem] = alist.count(elem)
+    for elem in alist:
+        ct[elem] = alist.count(elem)
     return ct
 ##
 def round_half_int(x, quiet=False, thresh=0.001):
     # round to nearest half-integer
     # issue a warning if change exceeds 'thresh', unless 'quiet'
-    # integer values are returned as int instead of float
     y = np.atleast_1d(x)
     hf = np.round(np.round(2*y)/2, 1)
     diff = np.abs(hf - y)
@@ -6066,9 +4055,6 @@ def round_half_int(x, quiet=False, thresh=0.001):
     if len(y[idx]) and not quiet:
         s = str(y[idx])
         print_err('', 'half-integer rounding exceeds {:f} for {:s}'.format(thresh, s), halt=False)
-    # if integers, convert to int
-    if not (hf - np.round(hf, 0)).any():
-        hf = hf.astype(int)
     # return a scalar if 'x' is scalar, otherwise a numpy array
     try:
         len(x)  # fails if 'x' is a scalar
@@ -6076,27 +4062,6 @@ def round_half_int(x, quiet=False, thresh=0.001):
     except:
         # scalar
         return hf[0]
-##
-def halves(spin):
-    # Convert decimal number like 2.5 to a fraction
-    #   string like '5/2'
-    n = int(round(2*float(spin)))
-    if n % 2:
-        # spin is odd
-        spinstr = '{:d}/2'.format(n)
-    else:
-        spinstr = '{:d}'.format(n // 2)
-    return spinstr
-##
-def ordinal_round_half_int(strx):
-    # given a string like '(2)2.0' or '(1)0.5', return a string with
-    #   decimal converted to nearest half-integer
-    strx = str(strx)
-    regex = re.compile(r'(?:\(\d+\))?(\d+\.?\d*)')
-    m = regex.match(strx)
-    sfrac = m.group(1)
-    sfloat = strx.replace(sfrac, str(halves(sfrac)))
-    return sfloat
 ##
 def random_ligation(Molec, Ligand, nligand=1, rmin=1.5, ntry=100, site=[], rmax=4.):
     '''
@@ -6272,24 +4237,14 @@ def convolve_peakshape(xstick, ystick, fwhm, shape='gaussian', npt=1000,
     yc *= y.max() / yc.max()
     return xc, yc
 ##
-def stoichiometry(elemdict, ones=True):
+def stoichiometry(elemdict):
     # stoichiometry string in the order defined here
     # 'elemdict' key is element symbol, value is count
-    # omit ones ('1') is ones==False
     order = ['C', 'H', 'N', 'O', 'F', 'Cl', 'S', 'P']
     stoich = ''
     for e in order:
         if e in elemdict:
-            # ensure is integer
-            n = int(np.round(elemdict[e]))
-            if abs(elemdict[e] - n) > 1.e-5:
-                print_err('', f'Element count must be integer {elemdict[e]}', halt=False)
-                return ''
-            elemdict[e] = n
-            if (elemdict[e] != 1) or ones:
-                stoich += '{:s}{:d}'.format(e, elemdict[e])
-            else:
-                stoich += '{:s}'.format(e)
+            stoich += '{:s}{:d}'.format(e, elemdict[e])
     # alphabetical for elements not specified in 'order'
     others = []
     for e in elemdict.keys():
@@ -6297,10 +4252,7 @@ def stoichiometry(elemdict, ones=True):
             others.append(e)
     if len(others):
         for e in sorted(others):
-            if (elemdict[e] != 1) or ones:
-                stoich += '{:s}{:d}'.format(e, elemdict[e])
-            else:
-                stoich += '{:s}'.format(e)
+            stoich += "{:s}{:d}".format(e, elemdict[e])
     return stoich
 ##
 def read_xy_curve(fcsv, nonneg=True):
@@ -6326,7 +4278,7 @@ def rms(v):
     return rms
 ##
 def rms_difference(v1, v2):
-    # return the rms difference between two vectors
+    # return the rms different between two vectors
     rmsd = distance(v1, v2) / np.sqrt(len(v1))
     return rmsd
 ##
@@ -6367,6 +4319,7 @@ def vectors_angle(v1, v2, unit='radian'):
         ang *= 180. / np.pi
     return ang
 ##
+'''
 def closest_match_after_rotation(sphangle, G, Gref):
     # given [theta, phi] that define a rotation,
     # rotate (a copy of) G and return its rms distance to Gref
@@ -6402,16 +4355,6 @@ def Monte_Carlo_rotational_matching(G, Gref, thresh=0.5, nmax=5000):
         sphangle = [0, 0]
     return dmin, sphangle
 ##
-def Geom_same_order(G1, G2):
-    # are the atoms (elements) in the same order?
-    o1 = G1.separateXYZ()[0]
-    o2 = G2.separateXYZ()[0]
-    ok = (o1 == o2)
-    if not ok:
-        print(o1)
-        print(o2)
-    return ok
-##
 def MC_structure_match(G, Gref, thresh=0.1, nmax=5000):
     # costly Monte Carlo search to get G to coincide with Gref,
     # with renumbering of atoms
@@ -6428,6 +4371,17 @@ def MC_structure_match(G, Gref, thresh=0.1, nmax=5000):
     d = min_RMSD(G, Gref, use_masses=True, inplace=True)
     #print('\t\t{:.3f}'.format(d))
     return d
+##
+'''
+def Geom_same_order(G1, G2):
+    # are the atoms (elements) in the same order?
+    o1 = G1.separateXYZ()[0]
+    o2 = G2.separateXYZ()[0]
+    ok = (o1 == o2)
+    if not ok:
+        print(o1)
+        print(o2)
+    return ok
 ##
 def match_and_align(G, Gref, thresh=0.1):
     # try hard to make the atom numbering and orientation of G
@@ -6470,27 +4424,6 @@ def match_and_align(G, Gref, thresh=0.1):
         update_min()
         #print('\t\tafter MC search, d = {:.3f}, dmin = {:.3f}'.format(d, dmin))
     return dmin, Gmin
-##
-def enumerative_prefix(labels, always=False):
-    # return a list of labels modified to include a counting (ordinal) prefix
-    # e.g ['A', 'B', 'A'] returns ['(1)A', '(1)B', '(2)A']
-    # if always==False, then skip the prefix for unique labels: returns ['(1)A', 'B', '(2)A']
-    # It is assumed that labels[] is in the desired order (increasing energy)
-    retval = [''] * len(labels)
-    lset = set(labels)
-    for lbl in lset:
-        n = list(labels).count(lbl) # number of occurrences
-        add_count = (n > 1) or always
-        i = 1
-        for j, arg in enumerate(labels):
-            if arg == lbl:
-                if add_count:
-                    pref = '({:d})'.format(i)
-                else:
-                    pref = ''
-                retval[j] = pref + str(lbl)
-                i += 1
-    return retval
 ##
 def renumber_water_cluster(G, Gref, dipvec, dipref, ang_thresh=0.02,
                            dip_thresh=0.03, dist_thresh=0.1):
@@ -6547,773 +4480,16 @@ def renumber_water_cluster(G, Gref, dipvec, dipref, ang_thresh=0.02,
         Gret.renumber_atoms(newnums)
     return Gret, msg
 ##
-def BS_extrap_agg(Nlist, Etot, Ehf=None, type_hf=None, type_correl='n-3'):
-    '''
-    Basis-set extrapolation; return extrapolated total energy(s) and 
-        distance of extrapolation(s)
-        Return [[HF, dHF], [E, dE]] or just [E, dE]
-    Arguments:
-        Nlist: list of "n" values for basis sets (TZ=3, QZ=4 etc.)
-            values must be consecutive
-        Etot:  list of total energies corresponding to basis sets
-        Ehf:   list of Hartree-Fock energies (optional)
-        type_hf:  method for HF energy extrapolation. Choices are:
-            'feller': 3-point exponential
-            'kmj'   : 2-point parameterized (Karton & Martin after Jensen) [default]
-            None    : extrapolate only the total energy
-        type_correl : method for extrapolating the correlation energy.
-            If only the total energy is being extrapolated, then this 
-            is the method to use. Choices are:
-            'feller': 3-point exponential
-            'n-3'   : Helgaker 2-point n**-3 [default]
-            'n+1-3' : (n+1)**-3 (Peterson et al.)
-            floating-point number:  use this as the exponent for n**-x
-    '''
-    if type_hf is not None:
-        type_hf = type_hf.lower()
-    type_correl = type_correl.lower()
-    hf_meth = [None, 'feller', 'kmj']
-    corr_meth = ['feller', 'n-3', 'n+1-3']
-    expon = None
-    if type_hf not in hf_meth:
-        print(f'** unrecognized HF extrapolation method: {type_hf}')
-        print_err('', f'Try one of these: type_hf={hf_meth}')
-    if type_correl not in corr_meth:
-        try:
-            expon = float(type_correl)
-        except:
-            print(f'** unrecognized correlation extrapolation method: {type_correl}')
-            print_err('', f'Try one of these: type_correl={corr_meth}')
-    for i in range(len(Nlist)-1):
-        if (Nlist[i+1] - Nlist[i]) != 1:
-            print_err('', f'Basis-set numbers must be consecutive: {Nlist}')
-    # Hartree-Fock
-    if type_hf is None:
-        # do not extrapolate HF energies
-        HF = None
-    else:
-        if Ehf is None:
-            print_err('', 'HF extrapolation requested but no HF energies supplied')
-        if len(Nlist) != len(Ehf):
-            print_err('', f'There are {len(Nlist)} basis sets but {len(Ehf)} HF energies')
-        if type_hf == 'feller':
-            # E(n) = HF + A*exp(-B*n)
-            if len(Nlist) < 3:
-                print_err('', f'{len(Nlist)} basis sets but 3 needed for Feller extrapolation')
-            # use only the largest three basis sets
-            nlist = Nlist[-3:]
-            ehf = Ehf[-3:]
-            # solve for B
-            x = (ehf[2] - ehf[1]) / (ehf[1] - ehf[0])  # x = exp(-B)
-            # solve for A
-            A = (ehf[2] - ehf[0]) / (x**3 * (x*x - 1))
-            HF = ehf[2] - A * x**nlist[2]
-            dHF = HF - ehf[2]  # distance of the extrapolation
-            print('HF = {:.6f}, dHF = {:.6f}'.format(HF, dHF))
-        if type_hf == 'kmj':
-            # E(n) = HF + A(n+2)*exp(-9*sqrt(n+1))  # L in paper = n+1
-            # use only the largest two basis sets
-            nlist = Nlist[-2:]
-            ehf = Ehf[-2:]
-            L = nlist[1] + 1
-            x = L * np.exp(9 * (np.sqrt(L) - np.sqrt(L-1))) / (L+1) - 1
-            HF = ehf[1] + (ehf[1] - ehf[0]) / x
-            dHF = HF - ehf[1]  # distance of the extrapolation
-            retval = [ [HF, dHF] ]
-    # correlation or total
-    if HF is None:
-        # extrapolate the total energy
-        if len(Nlist) != len(Etot):
-            print_err('', f'There are {len(Nlist)} basis sets but {len(Etot)} energies')
-        ecorr = Etot
-    else:
-        # extrapolate only the correlation energy
-        if len(Etot) != len(Ehf):
-            print_err('', 'Number of HF ({len(Ehf)}) and total ({len(Etot)}) energies must be equal')
-        ecorr = [(e-h) for e, h in zip(Etot, Ehf)]
-    if type_correl == 'feller':
-        # as above
-        nlist = Nlist[-3:]
-        ec = ecorr[-3:]
-        # solve for B
-        xc = (ec[2] - ec[1]) / (ec[1] - ec[0])
-        # solve for A
-        Ac = (ec[2] - ec[0]) / (xc**3 * (xc*xc - 1))
-        Ec = ec[2] - Ac * xc**nlist[2]
-        dEc = Ec - ec[2]
-        print('Ec = {:.6f}, dEc = {:.6f}'.format(Ec, dEc))
-    if (type_correl == 'n-3') or (type_correl == 'n+1-3'):
-        # E(n) = E + A*n**-3  or E(n) = E + A*(n+1)**-3
-        # use the two largest basis sets
-        nlist = Nlist[-2:]
-        ec = ecorr[-2:]
-        if type_correl == 'n+1-3':
-            # increment N
-            nlist = [n+1 for n in nlist]
-        a = nlist[1]**3 * ec[1] - nlist[0]**3 * ec[0]
-        b = nlist[1]**3 - nlist[0]**3
-        Ec = a/b
-        dEc = Ec - ec[1]
-    if expon is not None:
-        # E(n) = E + A *n**-expon
-        nlist = Nlist[-2:]
-        ec = ecorr[-2:]
-        a = nlist[1]**expon * ec[1] - nlist[0]**expon * ec[0]
-        b = nlist[1]**expon - nlist[0]**expon
-        Ec = a/b
-        dEc = Ec - ec[1]
-    if HF is None:
-        return [Ec, dEc]  # these are total energies
-    else:
-        # add the HF and correlation energies
-        E = HF + Ec
-        dE = dHF + dEc
-        retval.append( [E, dE] )
-        return retval
-##
-def BS_extrap(Nlist, E, extype='n-3'):
-    '''
-    Simpler basis-set extrapolation; return extrapolated energy and 
-        distance of extrapolation(s)
-        Return [E, dE]
-    Arguments:
-        Nlist: list of "n" values for basis sets (TZ=3, QZ=4 etc.)
-            values must be consecutive
-        E:     list of energies corresponding to basis sets
-        extype      : method for extrapolating the energy. Choices are:
-            'feller': 3-point exponential (for HF)
-            'kmj'   : 2-point parameterized (Karton & Martin after Jensen) (for HF)
-            'n-3'   : Helgaker 2-point n**-3 (for correlation)
-            'n+1-3' : (n+1)**-3 (Peterson et al.) (for correlation)
-            floating-point number:  use this as the exponent for n**-x
-                e.g. '2.48' for T-(T) and '3.38' for (Q)
-    '''
-    ex_meth = ['feller', 'kmj', 'n-3', 'n+1-3']
-    expon = None
-    if extype not in ex_meth:
-        try:
-            expon = float(extype)
-        except:
-            print(f'** unrecognized extrapolation method: {extype}')
-            print_err('', f'Try one of these: type_correl={ex_meth}')
-    for i in range(len(Nlist)-1):
-        if (Nlist[i+1] - Nlist[i]) != 1:
-            print_err('', f'Basis-set numbers must be consecutive: {Nlist}')
-    if len(Nlist) != len(E):
-        print_err('', f'There are {len(Nlist)} basis sets but {len(E)} energies')
-    if extype == 'feller':
-        nlist = Nlist[-3:]
-        ec = E[-3:]
-        # solve for B
-        xc = (ec[2] - ec[1]) / (ec[1] - ec[0])
-        # solve for A
-        Ac = (ec[2] - ec[0]) / (xc**3 * (xc*xc - 1))
-        Ec = ec[2] - Ac * xc**nlist[2]
-        dEc = Ec - ec[2]
-    if extype == 'kmj':
-        # E(n) = HF + A(n+2)*exp(-9*sqrt(n+1))  # L in paper = n+1
-        # use only the largest two basis sets
-        nlist = Nlist[-2:]
-        ec = E[-2:]
-        L = nlist[1] + 1
-        x = L * np.exp(9 * (np.sqrt(L) - np.sqrt(L-1))) / (L+1) - 1
-        Ec = ec[1] + (ec[1] - ec[0]) / x
-        dEc = Ec - ec[1]  # distance of the extrapolation
-    if (extype == 'n-3') or (extype == 'n+1-3'):
-        # E(n) = E + A*n**-3  or E(n) = E + A*(n+1)**-3
-        # use the two largest basis sets
-        nlist = Nlist[-2:]
-        ec = E[-2:]
-        if extype == 'n+1-3':
-            # increment N
-            nlist = [n+1 for n in nlist]
-        a = nlist[1]**3 * ec[1] - nlist[0]**3 * ec[0]
-        b = nlist[1]**3 - nlist[0]**3
-        Ec = a/b
-        dEc = Ec - ec[1]
-    if expon is not None:
-        # E(n) = E + A *n**-expon
-        nlist = Nlist[-2:]
-        ec = E[-2:]
-        a = nlist[1]**expon * ec[1] - nlist[0]**expon * ec[0]
-        b = nlist[1]**expon - nlist[0]**expon
-        Ec = a/b
-        dEc = Ec - ec[1]
-    return [Ec, dEc]
-##
-def CIRconvert(ids, output):
-    # from Stackoverflow
-    # convert molecule name (or other identifier) to another form
-    # e.g., 'smiles', 'cas', 'formula', 'iupac_name', 'stdinchi',
-    #       'stdinchikey'
-    try:
-        url = 'http://cactus.nci.nih.gov/chemical/structure/' + \
-            quote(ids) + '/' + output
-        ans = urlopen(url).read().decode('utf8')
-        return ans
-    except:
-        return 'Conversion failed'
-##
-def formula_to_atomlist(formula_in):
-    # convert a chemical formula to a list of atoms
-    # case sensitive
-    # the only brackets supported are parentheses 
-    atlist = []
-    prevlen = -1
-    re_num = re.compile(r'\d+')
-    # add '1' after any ')' that is not followed by a number
-    formula = re.sub('\)(?=\D)', ')1', formula_in)
-    if formula.endswith(')'):
-        formula = formula + '1'
-    # split at numbers, parentheses, element symbols
-    atlist = re.split(r'(\d+|[)(]|[A-Z][a-z]?)', formula)  # e.g., ['H', '2', 'O']
-    atlist = [a for a in atlist if len(a) > 0]  # remove blanks
-    # expand all subscripts
-    while len(atlist) != prevlen:
-        prevlen = len(atlist)
-        newlist = []
-        # expand one set of parentheses
-        expanded = False
-        nopen = 0
-        ileft = []  # indices of left parentheses
-        iright = -2 # index of closing right parenthesis
-        for i, a in enumerate(atlist):
-            newlist.append(a)
-            if a == '(':
-                nopen += 1
-                ileft.append(i)
-            elif a == ')':
-                nopen -= 1
-                if nopen < 0:
-                    print_err('', f'Unmatched parenthesis in {formula}')
-                if not expanded:
-                    # match the most recent left parenthesis
-                    paren = atlist[ileft[-1]+1:i]
-                    iright = i
-                    expanded = True
-            elif i == iright + 1:
-                # number to multiply parenthetical expression
-                mult = int(a)
-                # truncate to before the most recent left parenthesis
-                newlist = atlist[:ileft[-1]]
-                iright = -2
-                newlist.extend(paren * mult)
-        atlist = newlist
-        if nopen != 0:
-            print_err('', f'Unmatched parentheses in {formula}')
-    # expand simple subscripts
-    newlist = []
-    for i, a in enumerate(atlist):
-        if re_num.match(a):
-            at = newlist.pop()
-            newlist.extend([at] * int(a))
-        else:
-            newlist.append(a)
-    return newlist
-##
-def formula(atlist, Hill=False):
-    # given a list of element symbols, return a formula
-    # optionally using Hill convention
-    atcount = {}
-    for at in atlist:
-        try:
-            atcount[at] += 1
-        except KeyError:
-            atcount[at] = 1
-    elems = sorted(atcount.keys())
-    if (not Hill) or ('C' in elems):
-        # rearrange to put C, H in front
-        for el in ['H', 'C']:
-            if el in elems:
-                elems.remove(el)
-                elems = [el] + elems
-    # create the formula string
-    formula = ''
-    for el in elems:
-        if el in atcount:
-            n = atcount[el]
-            if n > 1:
-                formula += '{:s}{:d}'.format(el, atcount[el])
-            else:
-                formula += el  # don't list "1" as a multiplier
-            del atcount[el]
-    return formula
-##
-def num_deriv(X, Y, method='central'):
-    # numerical derivative
-    # return arrays xp, yp where 'xp' are interval midpoints
-    # 'method' can be 'central' or 'stepwise'
-    x = np.array(X)
-    y = np.array(Y)
-    if method not in ['central', 'stepwise']:
-        print_err('', f'Unknown method = {method}')
-    if method == 'central':
-        dx = x[2:] - x[:-2]
-        dy = y[2:] - y[:-2]
-        xp = (x[2:] + x[:-2]) / 2
-    else:
-        dx = x[1:] - x[:-1]
-        dy = y[1:] - y[:-1]
-        xp = (x[1:] + x[:-1]) / 2
-    yp = dy / dx
-    return xp, yp
-##
-def omega_possible_from_term(term):
-    # for a diatomic molecule, given a term symbol, return a set of
-    #   possible values for Omega: from |(Lambda - Sigma)| to (Lambda + Sigma)
-    S, L, parity = SL_from_term(term)
-    omposs = set(np.abs(np.arange(L-S, L+S+0.1)))
-    return omposs
-##
-def SL_from_term(term):
-    # given a term symbol like '(1)1D' or 'a 3D*', return the values of S and L
-    # in diatomic (linear) case, return S and Lambda and parity
-    rx = re.compile('(\d+)([SPDFGHIKLMNOQRTUV])')
-    rx_grk = re.compile('(\d+)([{:s}])'.format(''.join(GLAMBDA)))
-    diatom = False
-    lsymb = 'SPDFGHIKLMNOQRTUV'
-    m = rx.search(term)
-    if not m:
-        # not recognized as an atomic term symbol; try diatomic
-        m = rx_grk.search(term)
-        if m:
-            diatom = True
-        else:
-            print_err('', 'not recognized as a term symbol: {:s}'.format(term))
-    mult = int(m.group(1))
-    symb = m.group(2)
-    S = (mult - 1)/2
-    if diatom:
-        L = GLAMBDA.index(symb)  # actually Lambda, not L
-        # look for reflection parity as trailing '+' or '-'
-        parity = term[-1]
-        if parity not in ['+', '-']:
-            parity = ''
-        return S, L, parity
-    else:
-        L = lsymb.index(symb)
-        return S, L
-##
-def atomic_term_multip(term):
-    # given an atomic term symbol like '5D', 
-    # return its total multiplicity
-    S, L = SL_from_term(term)
-    smult = 2 * S + 1
-    lmult = 2 * L + 1
-    tmult = smult * lmult
-    return tmult
-##
-def molec_term_to_greek(term):
-    # given a term descriptor like (1)2Pi, return a
-    # term symbol with the Greek letter replacing 'Pi'
-    grk = term
-    for i, lbl in enumerate(LAMBDA):
-        if lbl.lower() in term.lower():
-            # replace it
-            grk = term.lower().replace(lbl.lower(), GLAMBDA[i])
-    return grk
-##
-def term_degeneracy(term):
-    # total (unsplit) term degeneracy, atom or linear molecule
-    grk = molec_term_to_greek(term) # will not affect atomic symbols
-    slp = SL_from_term(grk)  # S, L/lambda, and possible reflection parity
-    S = slp[0]
-    sdegen = 2*S + 1
-    if len(slp) == 3:
-        # linear molecule
-        lz = Lz_from_greek(grk)
-        ldegen = 2
-        if lz == 0:
-            ldegen = 1
-    else:
-        # atom
-        L = slp[1]
-        ldegen = 2*L + 1
-    degen = int(np.round(sdegen * ldegen))
-    return degen
-##
-def possible_J_from_term(term):
-    # given a term symbol like '(1)1D', return a list of
-    # possible values of J
-    S, L = SL_from_term(term)
-    jvals = [abs(L - ms) for ms in np.arange(-S, S+1)]
-    return np.round(jvals, 1)
-##
-def plot_broadened_IR(dfs, labels, xmin=None, xmax=None, fwhm=0,
-                     stick_color='b', conv_color='red', 
-                     conv_alpha=0.2, figsize=None,
-                     xlbl = 0.05, ylbl = 0.8):
-    '''
-    Vertically stacked plots of IR spectra, each described in a DataFrame
-        within DataFrame:  X = 'Freq', Y = 'IR inten'
-    Args:
-        dfs: list of DataFrame
-        labels: list of text to label each spectrum
-        xmin: lower limit to plot (cm-1)
-        xmax: upper limit
-        fwhm: for Gaussian convolution (cm-1)
-    '''
-    xcol = 'Freq'
-    ycol = 'IR inten'
-    # plot limits
-    if xmin is None:
-        xmin = min([df[xcol].min() for df in dfs]) - 3 * fwhm
-    if xmax is None:
-        xmax = max([df[xcol].max() for df in dfs]) + 3 * fwhm
-    if fwhm == 0:
-        # expand range so sticks are not hidden by vertical axes
-        d = 0.03 * (xmax - xmin)
-        xmax += d
-        xmin -= d
-    
-    nplot = len(dfs)
-    # figure size
-    if figsize is None:
-        figsize = (8, 4*nplot)
-    fig, axs = plt.subplots(nplot, sharex=True, figsize=figsize)
-    if nplot == 1:
-        axs = [axs]
-    axs[-1].set_xlabel('cm$^{-1}$')
-    
-    for ax, df, lbl in zip(axs, dfs, labels):
-        #ax.tick_params(axis='y', which='both', labelleft=False)
-        ax.set_ylabel('km mol$^{-1}$')
-        subdf = df[(df.Freq >= xmin) & (df.Freq <= xmax)]
-        X = subdf[xcol]
-        Y = subdf[ycol]
-        ax.stem(X, Y, linefmt=stick_color+'-', markerfmt=' ', basefmt=' ')
-        ymax = Y.max()
-        if fwhm:
-            # convolve with a gaussian
-            xc, yc = convolve_peakshape(X, Y, fwhm)
-            ax.plot(xc, yc, color=conv_color, alpha=conv_alpha)
-            ax.fill_between(xc, yc, color=conv_color, alpha=conv_alpha)
-            ymax = yc.max()
-        # place the text label
-        xpos = xlbl * (xmax-xmin) + xmin
-        ypos = ylbl * ymax
-        ax.text(xpos, ypos, lbl)
-    plt.xlim([xmin, xmax])
-    plt.show()
-    return
-def read_NIST_AEL_csv(file, simple_config=False, bare_term=False,
-                      show_limit=False, max_termE=np.inf):
-    '''
-    Read and cleanup a CSV file exported from the NIST ASD Levels form.
-    Expect only these columns: /Configuration/Term/J/Level (cm-1)/
-      'simple_config' removes everything but orbital type and pop
-      'bare_term' removes leading letter labels but keeps odd '*' marker
-      'show_limit' retains the ionization limit
-    '''
-    df = pd.read_csv(file, sep=',', comment='#').reset_index().fillna(np.nan)
-    df = df.drop(columns=df.columns[-1])
-    # rename columns
-    df.columns = ['Config', 'Term', 'J', 'E']
-    # remove all '=' and '"'
-    df = df.replace('[="]', '', regex=True)
-    if not show_limit:
-        # remove any row with 'Term' containing 'Limit'
-        df = df[df.Term.str.contains('Limit')==False]
-    
-    # deal with problematic entries under 'J'
-    dfbad = df[df.J.str.contains('or')]
-    if len(dfbad):
-        print('*** Ambigous J values (see below).  Arbitrarily accepting first one!')
-        displayDF(dfbad)
-        df.J = df.J.apply(lambda x: x.split('or')[0])
-    rx_J = re.compile('^[ /\d]+$')  # legal values for 'J'
-    dfbad = df[df.J.apply(lambda x: False if rx_J.match(x) else True)]
-    if len(dfbad):
-        print('Some bad J values')
-        displayDF(dfbad)
-    # convert fractions to float
-    df['J'] = df.J.apply(lambda x: halves_to_float(x))
-
-    # deal with problematic entries under 'E'
-    rx_E = re.compile('^[- \.\d+]+$')
-    dfbad = df[df.E.apply(lambda x: False if rx_E.match(x) else True)]
-    if len(dfbad):
-        print('Some non-numerical E values--erasing any question marks')
-        displayDF(dfbad)
-        # remove any '?' trailing energies
-        df['E'] = df['E'].str.replace(r'[?]', '', regex=True)
-    # remove any rows that lack numerals under 'E'
-    rx_numer = re.compile('\d')
-    df = df[df.E.apply(lambda x: True if rx_numer.search(x) else False)]
-    
-    df = df.astype({'J': float})
-    df = df.astype({'E': float})
-    if simple_config:
-        # remove parenthetical sub-terms (non-greedy)
-        df['Config'] = df['Config'].str.replace(r'\(.*?\)', '', regex=True)
-        # remove principal quantum numbers
-        df['Config'] = df['Config'].str.replace(r'^\d|\.\d', '', regex=True)
-        # remove any remaining periods
-        df['Config'] = df['Config'].str.replace(r'\.', '', regex=True)
-    
-    # Remove any term that lacks levels below 'max_termE'
-    #   unfortunately, term labels are not always unique
-    okterm = set(df[df.E <= max_termE].Term.values)
-    nlev = sum([len(possible_J_from_term(term)) for term in okterm])
-    df = df[df.Term.isin(okterm)]
-    if len(df) > nlev:
-        # repeated term labels; remove erroneous levels
-        #print('*** there are {:d} levels too many ***'.format(len(df) - nlev))
-        for term in okterm:
-            jvals = possible_J_from_term(term)
-            # discard all but the lowest-energy matching (term, J) level
-            for J in jvals:
-                subdf = df[(df.Term == term) & (df.J == J)].sort_values('E')
-                idx = subdf.index
-                idx = idx[1:]
-                df = df.drop(index=idx)
-    
-    if bare_term:
-        # keep only the last word in term names
-        df['Term'] = df['Term'].apply(lambda x: x.split()[-1])
-    # remove numerals appended to term symbol, e.g. change '3P2' to '3P'
-    rx_t = re.compile('(\d+[A-Z])\d+')
-    df['Term'] = df['Term'].apply(lambda x: rx_t.sub(r'\1', x))
-    
-    return df
-##
-def rot_consts_PtH_fitting(Jvec, Evec, omega, nrot=4):
-    # fit (J, E) data to eq (1) in McCarthy et al. (1993),
-    #   without the delta-G(1/2) or the parity
-    #   (i.e., my eq. (2) in the PtH spectroscopy paper)
-    # 'nrot' is the number of plain constants to include, of [Bv, Dv, Hv, Lv]
-    jvec = np.array(Jvec)
-    evec = np.array(Evec)
-    idx = np.argwhere(~np.isnan(evec))
-    jvec = jvec[idx].flatten()
-    evec = evec[idx].flatten()
-    if min(jvec) < omega:
-        s = 'Lowest J = {:.3f} < Omega = {:.3f}'.format(min(jvec), omega)
-        print_err('', s)
-    #print('>>>shapes: jvec =', jvec.shape, 'evec =', evec.shape)
-    xvec = jvec * (jvec + 1) - omega**2
-    # parameter vector is Pvec = [nrot, Tv, Bv, Dv, Hv, Lv],
-    #   although not all of them might be present
-    # choose initial values
-    Tv = evec.min()
-    Bv = (evec[1] - evec[0]) / (jvec[0] + 1) / 2
-    Dv = Hv = Lv = 0
-    Pvec = [nrot]
-    Pvec += [Tv, Bv, Dv, Hv, Lv][:nrot+1]
-    Pvec = np.array(Pvec)
-    #ecal = rot_consts_PtH_compute_levels(xvec, Pvec)
-    # inner functions
-    def resid(pvec, xvec, evec):
-        # return the mean residual
-        # 'pvec' is the list of rotational constants
-        nonlocal nrot
-        # ensure that nrot is undamaged
-        #   (by the scipy optimization routine)
-        pvec[0] = nrot
-        Ecalc = rot_consts_PtH_compute_levels(xvec, pvec)
-        ediff = Ecalc - evec
-        resid = (ediff**2).mean()
-        return resid
-    def print_results(result, pvec):
-        # print the fitted constants
-        nonlocal nrot
-        Pfit = list(result.x)[1:]
-        s = f'using nrot = {nrot}'
-        if result.success:
-            print('Constants fitted ' + s)
-        else:
-            print('** Failed to fit ** ' + s)
-        print('Tv = {:.4f}'.format(Pfit.pop(0)))
-        print('Bv = {:.4f}'.format(Pfit.pop(0)))
-        if nrot > 1:
-            print('Dv = {:.3e}'.format(Pfit.pop(0)))
-        if nrot > 2:
-            print('Hv = {:.1e}'.format(Pfit.pop(0)))
-        if nrot > 3:
-            print('Lv = {:.1e}'.format(Pfit.pop(0)))
-    
-    #print('Guess Pvec =', Pvec)
-    result = optimize.minimize(resid, Pvec, args=(xvec, evec),
-                              method='Nelder-Mead')
-    # refine; don't overwrite nrot because it gets damaged
-    Pvec = result.x.tolist()
-    #print('Initially optim Pvec =', Pvec)
-    result = optimize.minimize(resid, Pvec, args=(xvec, evec),
-                              method='Nelder-Mead')
-    if result.success:
-        print_results(result, Pvec)
-    else:
-        print(result)
-        print_results(result, Pvec)
-    return result
-##
-def rot_consts_PtH_compute_levels(xvec, pvec, Jmax=False, omega=None):
-    # return computed energy levels, given constants
-    # 'xvec' is [j(j+1) - omega**2]
-    # First element of 'pvec' is [nrot]
-    #   'nrot' is number of constants in pvec[] from [Bv, Dv, Hv, Lv]
-    #   they are listed in pvec[] in that order
-    # If 'Jmax'==True, then 'xvec' is actually a max value of J and
-    #   'omega' must also be specified
-    
-    # get parameter values from pvec
-    Tv = Bv = Dv = Hv = Lv = 0
-    plist = list(pvec)
-    nrot = int(plist.pop(0))
-    if (nrot + 2) != len(pvec):
-        print(f'*** nrot = {nrot} but len(pvec) = {len(pvec)}')
-    Tv = plist.pop(0)
-    Bv = plist.pop(0)
-    if nrot > 1:
-        Dv = plist.pop(0)
-    if nrot > 2:
-        Hv = plist.pop(0)
-    if nrot > 3:
-        Lv = plist.pop(0)
-    #print('>>>[Tv, Bv, Dv, Hv, Lv] =', [Tv, Bv, Dv, Hv, Lv])
-    if Jmax:
-        # construct xvec from Jmax and omega
-        Jmax = xvec
-        jvec = np.arange(omega, Jmax + 0.1)
-        xvec = jvec * (jvec + 1) - omega**2
-    # ycalc = Tv + Bv*xvec - Dv*xvec**2 + Hv*xvec**3 + Lv*xvec**4
-    E = Tv + xvec * (Bv + xvec * (-Dv + xvec * (Hv + xvec * Lv)))
-    return E
-##
-def confinterval(x, pct):
-    # Given samples from a PDF, return the narrowest interval that includes the 
-    #   specified fraction of the density (i.e., confidence interval).
-    # args:  x    :the numpy array of samples (on a uniform grid)
-    #        pct  :the requested fraction (as percent) 
-    # return: lower limit, upper limit (indices into x)
-    # algorithm is not clever
-    xa = np.array(x)
-    if (xa < 0).any():
-        print_err('', 'cannot have probability < 0')
-    xnorm = xa / xa.sum()  # normalize
-    frac = float(pct) / 100
-    nval = len(xnorm)
-    ilo = -nval
-    ihi = nval
-    cumul = 1.1
-    for i in range(nval-1):
-        if cumul < frac:
-            # subsequent intervals are no good
-            break
-        cumul = xnorm[i]
-        for j in range(i+1, nval-1):
-            cumul += xnorm[j]
-            if cumul >= frac:
-                # interval candidate
-                if (j - i) < (ihi - ilo):
-                    # this is the narrowest interval so far
-                    ilo = i
-                    ihi = j
-                    break
-    return ilo, ihi
-##
-def relative_difference(A, B, percent=False):
-    # Compute the relative difference reld = (A - B)/A
-    # If percent==True, return reld*100
-    reld = (A - B) / A
-    if percent:
-        reld *= 100
-    return reld
-##
-def find_degenerate(vals, tol, chain=True):
-    # Given a list, return a list of lists of indices where
-    #   each list is degenerate to within 'tol'
-    # If 'chain', then a denerate group may extend farther than 'tol'
-    idxl = []  # list of lists to return
-    used = []  # values already considered
-    idx = np.argsort(vals)
-    vprev = vfloor = -np.inf
-    grp = []
-    for i in idx:
-        v = vals[i]
-        if chain:
-            if (v - vprev) > tol:
-                # save any old group
-                if len(grp):
-                    idxl.append(grp)
-                # start a new group
-                grp = [i]
-            else:
-                # add to current group
-                grp.append(i)
-            vprev = v
-        else:
-            # no chaining
-            if (v - vfloor) > tol:
-                # save any old group
-                if len(grp):
-                    idxl.append(grp)
-                # start a new group
-                grp = [i]
-                vfloor = v
-            else:
-                # add to current group
-                grp.append(i)
-    # save the last group
-    idxl.append(grp)
-    return idxl
-##
-def average_degenerate(vals, tol, chain=True):
-    # Given a list, group and average by similar values
-    # Return:  list of averages, list of list of indices into vals[]
-    a = np.array(vals)
-    idxl = find_degenerate(a, tol=tol, chain=chain)
-    avg = []
-    for idx in idxl:
-        avg.append(np.mean(a[idx]))
-    return avg, idxl
-##
-############################################################
-##
-## general utility functions
-##
-def match_case_to_list(molec, mlist):
-    # given a list of str 'mlist', return the value(s) that
-    #   case-insensitively match 'molec'
-    # Return scalar if only one match, else return a list
-    match = []
-    for m in mlist:
-        if m.lower() == molec.lower():
-            match.append(m)
-    n = len(match)
-    if n == 0:
-        return None
-    elif n == 1:
-        return match[0]
-    else:
-        return match
-##
-def ensure_is_list(x):
-    # if x is not a list, return the list [x]
-    if not isinstance(x, list):
-        x = [x]
-    return x
-##
-def print_dict(d, nindent=0, sort=False):
+def print_dict(d, nindent=0):
     # print dict using indentation to make it more readable
     # also split up first-level lists
-    # if there is only one value, put it on same line as key
-    # sort the keys if 'sort' == True
     spre = '    ' * nindent
-    keys = d.keys()
-    if sort:
-        keys = sorted(keys)
-    for k in keys:
-        v = d[k]
-        kstr = f'{k} :'
-        endstr = '\n'
-        if pd.isnull(v) or np.isscalar(v) or (len(v) > 1):
-            # print value on same line as key
-            endstr = ' '
-        print(spre + kstr, end=endstr)
+    for k, v in d.items():
+        kstr = f'{k} : '
+        print(spre + kstr)
         if isinstance(v, dict):
             # recursive call
-            print_dict(v, nindent=nindent+1, sort=sort)
+            print_dict(v, nindent=nindent+1)
         elif isinstance(v, list):
             # print each top-level item on a separate line
             nv = len(v)
@@ -7330,108 +4506,6 @@ def print_dict(d, nindent=0, sort=False):
         else:
             vstr = f'    {v}'
             print(spre + vstr)
-    return
-##
-def halves_to_float(jstring):
-    # given a string like ' 2' or ' 3 /2', return the corresponding float
-    if '/' in jstring:
-        words = jstring.split('/')
-        j = float(words[0]) / float(words[1])
-    else:
-        j = float(jstring)
-    # round to nearest 0.5
-    j = np.round(2*j)
-    return j/2
-##
-def ordinal_halves_to_float(njstring):
-    # given a string like '(2)2' or '(1)1/2', return a string with
-    #   fraction converted to decimal
-    regex = re.compile(r'(?:\(\d+\))?(.+)')
-    m = regex.match(njstring)
-    sfrac = m.group(1)
-    sfloat = njstring.replace(sfrac, str(halves_to_float(sfrac)))
-    return sfloat
-##
-def dict_delkey(d, key):
-    # delete one or more keys from a dict, if present
-    # return the number of keys deleted
-    # 'key' can be a list or a scalar (including string)
-    ndel = 0
-    if isinstance(key, list):
-        for k in key:
-            if dict_delkey(d, k):
-                ndel += 1
-    else:
-        # simple key
-        if key in d:
-            del d[key]
-            ndel = 1
-    return ndel
-##
-def backfill_dict(defaults, userinput):
-    # recursively install any missing entries in dict 'userinput',
-    # based upon default values in dict 'defaults'
-    # return False on non-dict arguments, else True
-    if not (isinstance(defaults, dict) and isinstance(userinput, dict)):
-        # this routine does not apply
-        return False
-    for key in defaults:
-        if key in userinput:
-            try:
-                backfill_dict(defaults[key], userinput[key])
-            except:
-                # probably at the bottom of the structure
-                pass
-        else:
-            userinput[key] = defaults[key]
-    return True
-##
-def merge_dicts(old, new, path=None, silent=False):
-    # merge two nested dicts, modifying 'old' directly
-    # 'new' takes priority over 'old' when they conflict
-    # https://stackoverflow.com/questions/7204805/how-to-merge-dictionaries-of-dictionaries
-    # with modification for new > old
-    if path is None:
-        path = []
-    for key in new:
-        if key in old:
-            if isinstance(old[key], dict) and isinstance(new[key], dict):
-                merge_dicts(old[key], new[key], path + [str(key)])
-            elif old[key] == new[key]:
-                pass # values are the same
-            else:
-                # a conflict; use the 'new' value
-                if not silent:
-                    print('\t** Overriding with {} = {}'.format(path + [str(key)], new[key]))
-                old[key] = new[key]
-        else:
-            old[key] = new[key]
-    return old
-##
-def term_from_Latin(lbl):
-    # convert term label from Latin alphabet to Greek equivalent
-    mapping = {'S': SIGMA, 'P': PPI, 'D': DELTA, 'F': PHI, 'G': GAMMA}
-    grk = ''
-    for letter in lbl:
-        try:
-            c = mapping[letter]
-        except KeyError:
-            c = letter
-        grk = grk + c
-    return grk
-##
-def displayDF(df, maxrows=0):
-    # try to "display" a DataFrame
-    # or just print it
-    try:
-        if maxrows:
-            # instead of default
-            with pd.option_context('display.max_rows', maxrows):
-                display(df)
-        else:
-            display(df)
-    except NameError: 
-        print(df)
     return
 ##
 getframe_expr = 'sys._getframe({}).f_code.co_name'

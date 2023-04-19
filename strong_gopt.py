@@ -20,6 +20,7 @@ except IndexError:
 
 # 'saddle' should be -1 when no vibrations are computed
 # Otherwise, it should be 0 for energy minimum and 1 for TS
+# halt cleanly if file "strong_gopt.stop" is found
 saddle = 0  # set saddle = order of desired saddle point (1 for TS)
 
 for itry in range(nmax):
@@ -29,22 +30,20 @@ for itry in range(nmax):
         INP = open(ginput, 'r')
         subprocess.run('g16', stdin=INP, stdout=OUT, stderr=subprocess.STDOUT)
         INP.close()
+        # check for halt file
+        if os.path.exists('strong_gopt.stop'):
+            print('Halt because file "strong_gopt.stop" detected')
+            sys.exit()
 
     # check for success
     with open(goutput, 'r') as OUT:
-        nimag = -1
         OK = gau.opt_success(OUT)
         if OK:
-            # all is well
-            if saddle > -1:
-                # check vibrations
-                nimag = gau.get_nimag(OUT)
-                if nimag == saddle:
-                    # good
-                    break
-            else:
-                # no vibrations computed
-                break # from itry loop
+            # check number of imaginary frequencies
+            nimag = gau.get_nimag(OUT)
+            if nimag == saddle:
+                # successful optimization
+                break   # from itry loop
 
     # determine failure mode and try to fix
     Gjf = gau.GauInput(ginput)
@@ -52,7 +51,7 @@ for itry in range(nmax):
     # get the lowest-energy coordinates
     xyz = gau.minxyz(goutput)
     if ('empty' in fmode) or (len(xyz) == 0):
-        # the input file lacked coordinates, or the output file was lame
+        # the input file lacked atoms, or the output file was lame
         # try reading coordinates from the checkpoint file
         Gjf.set_keyword('geom', 'check')
         Gjf.remove_all_atoms()
