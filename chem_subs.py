@@ -6077,6 +6077,18 @@ def round_half_int(x, quiet=False, thresh=0.001):
         # scalar
         return hf[0]
 ##
+def round_to_tol(x, tol):
+    # Round the value to the nearest multiple of 'tol'
+    ndec = - int(np.floor(np.log10(tol)))
+    try:
+        y = []
+        for a in x:
+            y.append(round_to_tol(a, tol))
+    except TypeError:
+        n = np.rint(x/tol)
+        y = n * tol
+    return np.round(y, ndec)
+##
 def halves(spin):
     # Convert decimal number like 2.5 to a fraction
     #   string like '5/2'
@@ -6936,7 +6948,8 @@ def possible_J_from_term(term):
     # given a term symbol like '(1)1D', return a list of
     # possible values of J
     S, L = SL_from_term(term)
-    jvals = [abs(L - ms) for ms in np.arange(-S, S+1)]
+    #jvals = [abs(L - ms) for ms in np.arange(-S, S+1)]   wrong!
+    jvals = np.arange(abs(L - S), L+S+1)
     return np.round(jvals, 1)
 ##
 def plot_broadened_IR(dfs, labels, xmin=None, xmax=None, fwhm=0,
