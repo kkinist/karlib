@@ -6,6 +6,7 @@ import re, sys
 import pandas as pd
 import numpy as np
 from collections import Counter
+from sklearn.cluster import KMeans
 #sys.path.insert(1, r'C:\Users\irikura\Documents\GitHub\bin3dev')
 import chem_subs as chem
 ##
@@ -29,13 +30,14 @@ class MULTI:
     # also some results of parsing those lines
     # 'PG' is name of computational point group (optional)
     # 'parity' is to use irrep to assign parity of Sigma states
-    def __init__(self, linebuf, PG=None, parity=True):
+    # 'atom' is a flag affecting L**2 treatment
+    def __init__(self, linebuf, PG=None, parity=True, atom=False):
         self.lines = linebuf
         self.PG = PG
         self.nfrozen = self.nfrozen()
         self.norb = self.nactorb()
         self.groups = self.parseGroups()
-        self.results = self.parseResults()
+        self.results = self.parseResults(atom=atom)
         self.termLabels(parity=parity)
         self.NOs = self.natorb_info()
         self.civec = self.parseMULTIcivec()
@@ -115,7 +117,7 @@ class MULTI:
                 # start new group
                 parms = {'gNum': gnum}
         return glist
-    def parseResults(self):
+    def parseResults(self, atom=False):
         # Return a DataFrame with state information
         gnum = []
         size = []
@@ -191,6 +193,9 @@ class MULTI:
             df['LzLz'] = lexpec['LZLZ']
         if lexpec['L**2']:
             df['L**2'] = lexpec['L**2']
+        #if atom:
+        #    # drop the cartesian components of L**2
+        #    df.drop(columns=['LxLx', 'LyLy', 'LzLz'], inplace=True)
         return df
     def termLabels(self, greek=True, hyphen=False, quiet=False, parity=True):
         try:
@@ -621,18 +626,16 @@ class MRCI:
         for i in df.index:
             df.at[i, 'Configs'] = dfconfig[i].to_dict()
         return df
-    def transfer_lz(self, dfcas, etol=1.e-6):
+    def transfer_lz(self, dfcas, etol=1.e-6, atom=False):
         # assign Lz values to MRCI states from Lz values of dominant MCSCF states
         # dfcas is from MULTI().results
         # 'etol' is the energy-matching requirement for the MCSCF energy and the MRCI "reference" energy
         # No return value: self.results is modified
-        # If 'LzLz' is not found in 'dfcas', look for 'L**2' (an atom)
+        # If 'atom', also transfer 'L**2'
         strlzlz = 'LzLz'
-        strlz = 'Lz'
-        if strlzlz not in dfcas.columns:
-            # assume it's an atom
-            strlzlz = 'L**2'
-            strlz = 'L'
+        strlz = 'Lz'            
+        strll = 'L**2'
+        strl = 'L'
         if 'uTerm' in dfcas.columns:
             # with enumerative label
             cterm = 'uTerm'
@@ -642,6 +645,7 @@ class MRCI:
         irrep = self.results.loc[0, 'Irrep']
         subdf = dfcas[(dfcas.Spin == spin) & (dfcas.Irrep == irrep)].copy()
         lz = []
+        Llist = []  # used for atoms
         term = []
         r = []
         hasR = 'R' in dfcas  # whether bond length is present
@@ -651,12 +655,12 @@ class MRCI:
                 r.append(crow.R.values[0])
             if abs(row.Eref - crow.Energy.values[0]) < etol:
                 lzz = crow[strlzlz].values[0]
-                if strlzlz == 'LzLz':
-                    lz.append(np.sqrt(abs(lzz)))
-                else:
+                lz.append(np.sqrt(abs(lzz)))
+                if atom:
+                    lsq = crow[strll].values[0]
                     # convert L(L+1) to just L
-                    L = (-1 + np.sqrt(1 + 4 * lzz))/2
-                    lz.append(L)
+                    L = (-1 + np.sqrt(1 + 4 * lsq))/2
+                    Llist.append(L)
                 term.append(crow[cterm].values[0])
             else:
                 s = '*** Error: wrong reference energy: CAS = {:.5f} buf Eref = {:.5f}'
@@ -665,8 +669,11 @@ class MRCI:
                 print(crow)
                 print()
                 lz.append(np.nan)
+                Llist.append(np.nan)
                 term.append(np.nan)
         self.results[strlz] = lz
+        if atom:
+            self.results[strl] = L
         self.results['Term'] = term
         if hasR:
             self.results['R'] = r
@@ -1370,15 +1377,17 @@ class fullmatSOCI:
     Also read CASSCF and MRCI results, but without checks
     May 2022
     '''
-    def __init__(self, fpro, hybrid=False, quiet=False, sortval=False):
+    def __init__(self, fpro, hybrid=False, quiet=False, sortval=False,
+                 atom=False):
         # 'fpro' is the name of Molpro SO-CI output file
         # if 'hybrid' is True, replace MRCI+Q energies by 
-        # if 'sortval', sort eigen* by eigenvalues
         #   the HLSDIAG() array
+        # if 'sortval', sort eigen* by eigenvalues
+        # 'atom' is a flag that affects treatment of L**2
         PG = read_point_group(fpro)
         print('Computational group = {:s}'.format(PG))
         # read CASSCF
-        caslist, lineno_cas = readMULTI(fpro, PG=PG, linenum=True)
+        caslist, lineno_cas = readMULTI(fpro, PG=PG, linenum=True, atom=atom)
         CAS = caslist[-1]   # assume the last CASSCF to be the relevant one
         CAS.results = relabel_CAS_by_energy(CAS.results)
         print('CASSCF states:')
@@ -1388,7 +1397,7 @@ class fullmatSOCI:
         cilist, lineno_ci = readMRCI(fpro, linenum=True)   # probably many
         # 'cilist' is a list of MRCI() objects
         for m in cilist:
-            m.transfer_lz(CAS.results)
+            m.transfer_lz(CAS.results, atom=atom)
         mrci = [MRCIstate(row) for m in cilist for (irow, row) in m.results.iterrows()]
         if hybrid:
             # read HLSDIAG vector from file
@@ -1426,6 +1435,7 @@ class fullmatSOCI:
         if type(sovecbuf) != np.ndarray:
             # parse a text buffer
             self.SOvec = parse_SOvectors(sovecbuf, self.dimen)
+        self.cas = CAS  # a MULTI() object
         self.mrci = mrci  # list of MRCIstate() objects
         self.dfci = combineMRCI(cilist)
         # get eigens that correspond to the matrix
@@ -1491,11 +1501,11 @@ class fullmatSOCI:
         self.ci_iso = ci_iso
         return
     def average_terms(self, cols = ['Term', 'dipZ', 'Edav', 'idx'], 
-                      be_close=None, quiet=False):
+                      be_close=None, quiet=False, atom=False):
         # Average pairs of MRCI states into terms, keeping only columns 'cols'
         # Also map basis states to terms
         # Also compute term weights
-        dfterm = averageTermsApprox(self.dfci, be_close=be_close,
+        dfterm = averageTermsApprox(self.dfci, be_close=be_close, atom=atom,
                 quiet=quiet).sort_values('Edav')[cols].reset_index(drop=True)
         dfterm['Term'] = chem.enumerative_prefix(dfterm.Term, always=False)  # add identifying prefixes as needed
         dfterm['ecm'] = np.round(((dfterm.Edav - dfterm.Edav.min()) * chem.AU2CM).astype(float), 1)
@@ -1701,14 +1711,124 @@ class fullmatSOCI:
         df.fillna(0, inplace=True)
         df['all'] = df.sum(axis=1)
         return df
-    def assign_atomic_J(self, csq_thresh, quiet=False):
+    def assign_atomic_J(self, csq_thresh=0.01, quiet=False):
+        '''
+        Assume the CASSCF degeneracies are good
+        Assume the MRCI degeneracies are damaged
+        Assign values of J 
+        Return a DataFrame of SO levels
+        This version uses Kmeans clustering based upon energy and
+          term composition
+        '''
+        self.average_terms(quiet=quiet, atom=True)
+        self.compute_term_weights()
+        #dfsoci = self.SOe.results.sort_values('Erel').reset_index(drop=True)  # why was I doing this?
+        dfsoci = self.SOe.results.copy()
+        dfsoci['termwt'] = list(self.termwt.T)
+        # Find leading term for each state
+        # Also find possible J values based up (L, S);
+        #   use intersection of sects from terms heavier than csq_thresh
+        leadl = []   # list of leading term for each state
+        Jpossl = []  # list of sets
+        for iso in range(self.termwt.shape[1]):
+            # loop over SO-CI states
+            jposs = None
+            imax = np.argmax(self.termwt[:, iso])
+            leadl.append(self.dfterm.at[imax, 'Term'])
+            for iterm in range(self.termwt.shape[0]):
+                # loop over averaged terms
+                c = self.termwt[iterm, iso]
+                if c > csq_thresh:
+                    # find possible J values for this term
+                    jvals = chem.possible_J_from_term(self.dfterm.loc[iterm, 'Term'])
+                    if jposs is None:
+                        jposs = set(jvals)
+                    else:
+                        jposs = jposs.intersection(set(jvals))
+            Jpossl.append(frozenset(jposs))
+        dfsoci['Lead'] = leadl
+        dfsoci['Jposs'] = Jpossl
+        dfsoci['J'] = np.nan
+        # get list of J values needed
+        Jlist = []
+        for term in self.dfterm.Term:
+            Jvec = chem.possible_J_from_term(term)
+            Jlist.extend(Jvec)
+        nlevel = len(Jlist)
+        nstate = (np.array(Jlist)*2 + 1).sum().astype(int)
+        if nstate != len(dfsoci):
+            chem.print_err('', 'Expect {:d} SO-CI states but this is room for {:d}'.format(nstate, len(dfsoci)))
+        # Create the array to send to the SciKit clustering routine
+        # Clusters are based upon energy (mapped onto the interval [0, 1]) and
+        #   upon term weights
+        X = np.transpose(self.termwt).copy() # term weights within each microstate
+        # add another column for relative energy re-scaled to [0, 1] to match the term weights
+        xe = dfsoci.Erel.values / dfsoci.Erel.max()
+        xe = xe.reshape((-1,1))
+        X = np.hstack((X, xe))
+        if not quiet:
+            print(f'Creating {nlevel} clusters/levels')
+        Kmean = KMeans(n_clusters=nlevel)
+        Kmean.fit(X)
+        Kmean.cluster_centers_
+        xmeans = [x[-1] for x in Kmean.cluster_centers_]
+        Emeans = np.array(xmeans) * dfsoci.Erel.max()
+        dfsoci['ilev'] = Kmean.labels_
+        dfsoci['Elev'] = [Emeans[i] for i in Kmean.labels_]
+        Jfound = []
+        for ilev, grp in dfsoci.groupby('ilev'):
+            g = len(grp)
+            J = np.round((g-1)/2, 1)
+            dfsoci.loc[dfsoci.ilev == ilev, 'J'] = J
+            Jfound.append(J)
+        # Error checking of assignments
+        if Counter(Jfound) != Counter(Jlist):
+            print('J values found are not J values expected!')
+            print('Expected:', sorted(Counter(Jlist).items()))
+            print('Found   :', sorted(Counter(Jfound).items()))
+        for irow, row in dfsoci.iterrows():
+            if row.J not in row.Jposs:
+                print(f'Nr {row.Nr} has J = {row.J} but that is not among possibilities {sorted(row.Jposs)}')
+        # Create new DataFrame for levels
+        Nr = []  # list of lists
+        E_mean = []
+        Eshift_mean = []
+        Lead = []  # leading term
+        J = []
+        termwt = []  # list of dict
+        for ilev, grp in dfsoci.groupby('ilev'):
+            Nr.append(sorted(grp.Nr))    
+            # use mean energy
+            E_mean.append(grp.E.mean())
+            Eshift_mean.append(grp.Eshift.mean())
+            lterm = set(grp.Lead)
+            if len(lterm) > 1:
+                chem.print_err('', 'More than one leading term for level {ilev}!', halt=False)
+                Lead.append(sorted(lterm))
+            else:
+                Lead.append(lterm.pop())
+            jval = set(grp.J).pop()
+            J.append(jval)
+            avgwt = grp.termwt.values.mean()  # term weights averaged within the level
+            # convert avgwt to dict, using csq_thresh
+            dt = {}
+            for t, w in zip(self.dfterm.Term, avgwt):
+                if w > csq_thresh:
+                    dt[t] = chem.round_to_tol(w, csq_thresh)
+            termwt.append(dt)
+        dflev = pd.DataFrame({'Lead': Lead, 'J': J, 'Eshift': Eshift_mean, 'E': E_mean, 'Nr': Nr})
+        dflev.insert(2, 'Erel',dflev.Eshift - dflev.Eshift.min())
+        dflev.insert(4, 'Composition', termwt)
+        dflev = dflev.sort_values('Erel').reset_index(drop=True)
+        return dflev
+    def assign_atomic_J_old(self, csq_thresh, quiet=False):
         '''
         Assume the CASSCF degeneracies are good
         Assume the MRCI degeneracies are damaged
         Assign values of J 
         Return a DataFrame of SO levels
         '''
-        self.average_terms(quiet=quiet)
+        self.average_terms(quiet=quiet, atom=True)
         self.compute_term_weights()
         dfsoci = self.SOe.results.sort_values('Erel').reset_index(drop=True)
         Jpossl = []  # list of sets
@@ -2850,10 +2970,11 @@ def read_harmonic_freqs(fname):
     vecs = np.array(vecs, dtype='float').T
     return modenums, irreps, intenss, vecs
 ##
-def readMULTI(fname, linenum=False, PG=None, parity=True):
+def readMULTI(fname, linenum=False, PG=None, parity=True, atom=False):
     # return a list of MULTI objects from a MOLPRO output file
     # If linenum == True, also return a list of line numbers
     # 'PG' is the name of the point group (optional)
+    # 'atom' is a flag
     rx_multi = re.compile(r'[ 1]PROGRAM \* MULTI \(Direct Multiconfiguration SCF\)')
     rx_end = re.compile(r' [*]{80}')
     retval = []
@@ -2867,7 +2988,7 @@ def readMULTI(fname, linenum=False, PG=None, parity=True):
                 if rx_end.match(line):
                     inMULTI = False
                     # create the MULTI object
-                    retval.append(MULTI(casbuf, PG=PG, parity=parity))
+                    retval.append(MULTI(casbuf, PG=PG, parity=parity, atom=atom))
             if rx_multi.match(line):
                 inMULTI = True
                 casbuf = [line.rstrip()]
@@ -3071,7 +3192,8 @@ def averageTerms(dfci, be_close=None, target=None, be_same=None, quiet=False):
         dfret.drop(badcol, axis=1, inplace=True)
     return dfret
 ##
-def averageTermsApprox(dfci, be_close=None, target=None, be_same=None, quiet=False):
+def averageTermsApprox(dfci, be_close=None, target=None, be_same=None, 
+                       quiet=False, atom=False):
     '''
     Given a DataFrame of MULTI or MRCI results, identify and average
       degenerate levels. Crude degeneracies are noted unless 'quiet'. 
@@ -3085,6 +3207,9 @@ def averageTermsApprox(dfci, be_close=None, target=None, be_same=None, quiet=Fal
         #be_close = ['Energy', 'Edav', 'Dipole', 'LzLz', 'dipX', 'dipY', 'dipZ', 'Eref', 'C0']
         be_close = ['Energy', 'Edav', 'Dipole', 'Lz', 'dipX', 'dipY', 'dipZ', 'Eref', 'C0']
         target =   [ 1.e-5,    1.e-5,  1.e-4,    1.e-4,  1.e-4,  1.e-4,  1.e-4,  1.e-4,  1.e-4]
+        if atom:
+            # don't consider Lz in deciding degeneracy
+            target[3] = np.inf
     #wishes = zip(be_close, target)
     wishes = pd.Series(target, be_close)
     degen = {'Σ': 1, 'Π': 2, 'Δ': 2, 'Φ': 2, 'Γ': 2,  # linear molecules; 'H' will be annoying
@@ -3118,7 +3243,7 @@ def averageTermsApprox(dfci, be_close=None, target=None, be_same=None, quiet=Fal
                     rowdiff[col] = '--'
                 subdf = pd.concat([subdf, rowdiff.to_frame().T], ignore_index=True)
                 #subdf = subdf.append(rowdiff, ignore_index=True)
-                print('large non-degeneracies:')
+                print('large non-degeneracies in term energies:')
                 chem.displayDF(subdf)
             newrow = pd.concat((subdf.iloc[0][be_same], rowavg, pd.Series({'idx': idx})))
             dfret.loc[len(dfret)] = newrow
@@ -3631,7 +3756,7 @@ def read_SOCI_scan_file(fsoc):
     linenos = [lineno_crd, lineno_cas, lineno_ci, lineno_so, lineno_somat]
     return data, linenos
 ##
-def collect_corresponding_SOCI_results(fsoc):
+def collect_corresponding_SOCI_results(fsoc, atom=False):
     # collect related geometry, CASSCF, MRCI and SO-CI data from a MOLPRO output file
     # return a dict of lists, where the indices match for matching calculations
     # if there is more than one SO-CI, assume that they have the same dimension (number of states)
@@ -3666,7 +3791,7 @@ def collect_corresponding_SOCI_results(fsoc):
         dimen = len(data_sets['soci'][i].results)
         cilist = data_sets['ci_sect'][i]  # list of MRCI calculations for this geometry
         for m in cilist:
-            m.transfer_lz(data_sets['cas'][i].results)
+            m.transfer_lz(data_sets['cas'][i].results, atom=atom)
         dfci = combineMRCI(cilist)
         dfterms = averageTermsApprox(dfci)
         dfterms['Ecm'] = np.round(chem.AU2CM * (dfterms.Edav - dfterms.Edav.min()), 1)
