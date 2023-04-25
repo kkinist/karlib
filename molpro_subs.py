@@ -1445,7 +1445,8 @@ class fullmatSOCI:
     def diagonalize(self, store=False, vectors=False, sortval=True):
         # compute squared eigenvectors and eigenvalues
         # if 'store' == False, return (vals, vecsq, ciwt) and do not modify attributes
-        # if 'store' == True, return nothing
+        # if 'store' == True, modify attributes and return nothing
+        # if 'vectors' == True, also return (or modify) eigenvectors
         # if 'sortval' = True, sort by real part of eigenvalues
         # also return/store eigenvectors if 'vectors' == True
         eigvals, eigvecs = np.linalg.eigh(self.matrix)
@@ -1473,6 +1474,11 @@ class fullmatSOCI:
                 return vals, vecsq, ciwt, vec
             else:
                 return vals, vecsq, ciwt
+    def fill_diagonal(self, ecm):
+        # Replace diagonal elements of SO matrix by list 'ecm'
+        # 'ecm' should be in cm-1 relative to the ground term
+        np.fill_diagonal(self.matrix, ecm)
+        return
     def ci_weights(self, vecsq):
         # assign weights to CI states (not SO basis states)
         ciwt = np.zeros([len(self.dfci), self.dimen])  # weights for CI states (not SO basis states)
@@ -1767,7 +1773,7 @@ class fullmatSOCI:
         xe = xe.reshape((-1,1))
         X = np.hstack((X, xe))
         if not quiet:
-            print(f'Creating {nlevel} clusters/levels')
+            print(f'Assigning J using {nlevel} clusters/levels')
         Kmean = KMeans(n_clusters=nlevel)
         Kmean.fit(X)
         Kmean.cluster_centers_
@@ -1795,7 +1801,8 @@ class fullmatSOCI:
         Eshift_mean = []
         Lead = []  # leading term
         J = []
-        termwt = []  # list of dict
+        termwt = []  # list of array
+        compos = []  # list of dict
         for ilev, grp in dfsoci.groupby('ilev'):
             Nr.append(sorted(grp.Nr))    
             # use mean energy
@@ -1815,11 +1822,17 @@ class fullmatSOCI:
             for t, w in zip(self.dfterm.Term, avgwt):
                 if w > csq_thresh:
                     dt[t] = chem.round_to_tol(w, csq_thresh)
-            termwt.append(dt)
-        dflev = pd.DataFrame({'Lead': Lead, 'J': J, 'Eshift': Eshift_mean, 'E': E_mean, 'Nr': Nr})
-        dflev.insert(2, 'Erel',dflev.Eshift - dflev.Eshift.min())
-        dflev.insert(4, 'Composition', termwt)
+            termwt.append(avgwt)
+            compos.append(dt)
+        # create J-including term symbols
+        Jlbl = chem.enumerative_prefix([f'{t}_{chem.halves(j)}' for t, j in zip(Lead, J)])
+        dflev = pd.DataFrame({'Lead': Lead, 'J': J, 'Jlbl': Jlbl, 'Eshift': Eshift_mean, 'E': E_mean,
+                              'Nr': Nr, 'termwt': termwt})
+        dflev.insert(3, 'Erel',dflev.Eshift - dflev.Eshift.min())
+        dflev.insert(5, 'Composition', compos)
         dflev = dflev.sort_values('Erel').reset_index(drop=True)
+        self.dfmicro = dfsoci
+        self.dfso = dflev
         return dflev
     def assign_atomic_J_old(self, csq_thresh, quiet=False):
         '''
@@ -1939,6 +1952,20 @@ class fullmatSOCI:
             dflevel[col] = np.round(dflevel[col], 1)
         dflevel['Ecm'] = np.round((dflevel.E - dflevel.E.min()) * chem.AU2CM)
         return dfsoci, dflevel
+    def atomic_level_contrib_from_term(self, termlabel, normalize=False):
+        # Return a DataFrame showing levels to which specified term contributes
+        # 'termlabel' can be an index (into self.dfterm) or a value (str)
+        df = self.dfso[['Lead', 'J', 'Jlbl', 'Erel']].copy()
+        # find index in self.dfterm
+        idx = self.dfterm[self.dfterm.Term == termlabel].index[0]
+        weights = []
+        for irow, row in self.dfso.iterrows():
+            weights.append(row.termwt[idx])
+        if normalize:
+            weights /= sum(weights)
+        df['g'] = (2 * df.J + 1).astype(int)
+        df[termlabel] = weights
+        return df
     def simp_config_weights(self, nround=4):
         # simplified configuration weights (for use by hybrid_term_energies())
         # sum the squared configuration coefficients for all MRCI states within each term
