@@ -1727,13 +1727,17 @@ class fullmatSOCI:
           term composition
         '''
         self.average_terms(quiet=quiet, atom=True)
-        self.compute_term_weights()
+        self.compute_term_weights()  # assign self.termwt based on self.vecsq
         #dfsoci = self.SOe.results.sort_values('Erel').reset_index(drop=True)  # why was I doing this?
-        dfsoci = self.SOe.results.copy()
+        #dfsoci = self.SOe.results.copy()
+        dfsoci = pd.DataFrame({'Nr': range(1,self.dimen+1), 'Eshift': self.vals,
+                               'Erel': self.vals - self.vals.min()})
+        # For absolute energy, use Molpro value of E0
+        dfsoci['E'] = self.SOe.E0 + self.vals / chem.AU2CM
         dfsoci['termwt'] = list(self.termwt.T)
         # Find leading term for each state
         # Also find possible J values based up (L, S);
-        #   use intersection of sects from terms heavier than csq_thresh
+        #   use intersection of sets from terms heavier than csq_thresh
         leadl = []   # list of leading term for each state
         Jpossl = []  # list of sets
         for iso in range(self.termwt.shape[1]):
