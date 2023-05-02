@@ -6483,11 +6483,14 @@ def match_and_align(G, Gref, thresh=0.1):
         #print('\t\tafter MC search, d = {:.3f}, dmin = {:.3f}'.format(d, dmin))
     return dmin, Gmin
 ##
-def enumerative_prefix(labels, always=False):
+def enumerative_prefix(labels, always=False, style='numeric'):
     # return a list of labels modified to include a counting (ordinal) prefix
     # e.g ['A', 'B', 'A'] returns ['(1)A', '(1)B', '(2)A']
     # if always==False, then skip the prefix for unique labels: returns ['(1)A', 'B', '(2)A']
     # It is assumed that labels[] is in the desired order (increasing energy)
+    # If style == 'alpha', use ASD-style prefixes like "a 3P" 
+    #    default style is like "(1)3P"
+    az = 'abcdefghijklmnopqrstuvwxyz'
     retval = [''] * len(labels)
     lset = set(labels)
     for lbl in lset:
@@ -6497,7 +6500,10 @@ def enumerative_prefix(labels, always=False):
         for j, arg in enumerate(labels):
             if arg == lbl:
                 if add_count:
-                    pref = '({:d})'.format(i)
+                    if style == 'numeric':
+                        pref = '({:d})'.format(i)
+                    elif style == 'alpha':
+                        pref = '{:s} '.format(az[i-1])
                 else:
                     pref = ''
                 retval[j] = pref + str(lbl)

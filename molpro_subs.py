@@ -1375,6 +1375,7 @@ class fullmatSOCI:
        i.e., in this version there is no modification of the SO matrix
     For a single-geometry, single-SOCI calculation
     Also read CASSCF and MRCI results, but without checks
+    SO-CI should be run with printing options "vls=0,hls=0"
     May 2022
     '''
     def __init__(self, fpro, hybrid=False, quiet=False, sortval=False,
@@ -1507,14 +1508,15 @@ class fullmatSOCI:
         self.ci_iso = ci_iso
         return
     def average_terms(self, cols = ['Term', 'dipZ', 'Edav', 'idx'], 
-                      be_close=None, quiet=False, atom=False):
+                      be_close=None, quiet=False, atom=False, always=False):
         # Average pairs of MRCI states into terms, keeping only columns 'cols'
         # Also map basis states to terms
         # Also compute term weights
         dfterm = averageTermsApprox(self.dfci, be_close=be_close, atom=atom,
                 quiet=quiet).sort_values('Edav')[cols].reset_index(drop=True)
-        dfterm['Term'] = chem.enumerative_prefix(dfterm.Term, always=False)  # add identifying prefixes as needed
         dfterm['ecm'] = np.round(((dfterm.Edav - dfterm.Edav.min()) * chem.AU2CM).astype(float), 1)
+        # add identifying prefixes to term labels as needed
+        dfterm['Term'] = chem.enumerative_prefix(dfterm.Term, always=always)
         self.dfterm = dfterm
         # establish correspondence between terms and SO basis states
         sob_iterm = [None] * self.dimen # Term parent for each SO basis state
@@ -1721,7 +1723,8 @@ class fullmatSOCI:
         '''
         Assume the CASSCF degeneracies are good
         Assume the MRCI degeneracies are damaged
-        Assign values of J 
+        Assign values of J
+        'prefix' will distinguish like term symbols
         Return a DataFrame of SO levels
         This version uses Kmeans clustering based upon energy and
           term composition
