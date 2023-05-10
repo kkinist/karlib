@@ -918,6 +918,8 @@ def read_electronic_state(fhandl, contract=True):
     # return only the last instance
     # return "?" if Gaussian couldn't figure it out
     # if "contract" is True, remove the hyphen
+    byte_start = fhandl.tell()
+    fhandl.seek(0)  # rewind file
     rx = re.compile(' The electronic state is (\S+)\.')
     estate = '?'
     for line in fhandl:
@@ -926,6 +928,7 @@ def read_electronic_state(fhandl, contract=True):
             estate = m.group(1)
     if contract:
         estate = estate.replace('-', '')
+    fhandl.seek(byte_start)  # return file pointer to original position
     return estate
 ##
 def read_g09_archive_block(fhandl):
@@ -2823,4 +2826,42 @@ def PG_type(PG):
                     if int(m.group(1)) > 5:
                         pgtype = 'symmetric'
     return pgtype
+##
+def read_tddft(fname):
+    # Read results of TD-DFT calculation
+    # Return a DataFrame
+    statenum = [0]
+    symm = []
+    ev = [0]
+    osc = [0]
+    s2 = []
+    smult = []  # this is printed by Gaussian
+    re_newstate = re.compile(r'\s*Excited State\s+(\d+):\s+(\d+\.\d+)[-](\S+)\s+([-]?\d+\.\d+) eV' +
+                        r'\s*[-]?\d+\.\d+ nm\s+f=([-]?\d+\.\d+)\s+<S\*\*2>=(\d+\.\d+)')
+    re_s2 = re.compile(r' <S\*\*2>=\s*(\d+\.\d+)\s+S=')
+    with open(fname) as F:
+        gstate = read_electronic_state(F)
+        symm.append(gstate)
+        for line in F:
+            m = re_s2.search(line)
+            if m:
+                if 'Initial' not in line:
+                    # read ground-state info
+                    s2.append(float(m.group(1)))
+                    s = float(line.split()[-1])
+                    smult.append(2*s + 1)
+            m = re_newstate.match(line)
+            if m:
+                #print(line.rstrip())
+                statenum.append(int(m.group(1)))
+                smult.append(float(m.group(2)))
+                symm.append(m.group(3))
+                ev.append(float(m.group(4)))
+                osc.append(float(m.group(5)))
+                s2.append(float(m.group(6)))
+    df = pd.DataFrame({'Nr': statenum, 'Irrep': symm, '<S**2>': s2, 'spinmult': smult,
+                       'eV': ev, 'f': osc})
+    # add column for cm-1
+    df['cm-1'] = np.round(df.eV * chem.EV2CM, 0)
+    return df
 ##
