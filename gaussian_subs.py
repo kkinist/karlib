@@ -2830,23 +2830,35 @@ def PG_type(PG):
 def read_tddft(fname):
     # Read results of TD-DFT calculation
     # Return a DataFrame
-    statenum = [0]
+    statenum = []
     symm = []
-    ev = [0]
-    osc = [0]
+    ev = []
+    osc = []
     s2 = []
     smult = []  # this is printed by Gaussian
+    # open-shell
     re_newstate = re.compile(r'\s*Excited State\s+(\d+):\s+(\d+\.\d+)[-](\S+)\s+([-]?\d+\.\d+) eV' +
                         r'\s*[-]?\d+\.\d+ nm\s+f=([-]?\d+\.\d+)\s+<S\*\*2>=(\d+\.\d+)')
+    # closed-shell
+    re_closed = re.compile(r'\s*Excited State\s+(\d+):\s+(Singlet|Triplet)-(.+)\s+([-]?\d\.\d+) eV' +
+                           r'\s*[-]?\d+\.\d+ nm\s+f=([-]?\d+\.\d+)\s+<S\*\*2>=(\d+\.\d+)')
     re_s2 = re.compile(r' <S\*\*2>=\s*(\d+\.\d+)\s+S=')
+    style = 'RHF'
     with open(fname) as F:
         gstate = read_electronic_state(F)
-        symm.append(gstate)
         for line in F:
             m = re_s2.search(line)
             if m:
+                print(line.rstrip())
                 if 'Initial' not in line:
                     # read ground-state info
+                    if style == 'RHF':
+                        # correct this
+                        style = 'UHF'
+                        statenum = [0]
+                        symm = [gstate]
+                        ev = [0]
+                        osc = [0]
                     s2.append(float(m.group(1)))
                     s = float(line.split()[-1])
                     smult.append(2*s + 1)
@@ -2855,6 +2867,15 @@ def read_tddft(fname):
                 #print(line.rstrip())
                 statenum.append(int(m.group(1)))
                 smult.append(float(m.group(2)))
+                symm.append(m.group(3))
+                ev.append(float(m.group(4)))
+                osc.append(float(m.group(5)))
+                s2.append(float(m.group(6)))
+            m = re_closed.match(line)
+            if m:
+                #print(line.rstrip())
+                statenum.append(int(m.group(1)))
+                smult.append(chem.MULTSPIN[m.group(2)])
                 symm.append(m.group(3))
                 ev.append(float(m.group(4)))
                 osc.append(float(m.group(5)))
