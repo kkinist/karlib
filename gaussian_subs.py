@@ -1,7 +1,12 @@
 # Routines specific to Gaussian09.
 # Python3 and pandas (started Sept. 2016)
 # Karl Irikura
-####
+
+# suppress annoying warning
+from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning
+import warnings
+warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
+
 import sys
 import re
 import pandas as pd
@@ -9,7 +14,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 #from chem_subs import *
 import chem_subs as chem
-####
+
 class GauInput():
     # to facilitate modifying and creating Gaussian input files
     def __init__(self, *args, intype='gau_input'):
@@ -2885,4 +2890,13 @@ def read_tddft(fname):
     # add column for cm-1
     df['cm-1'] = np.round(df.eV * chem.EV2CM, 0)
     return df
+##
+def natom(filename):
+    # return the number of atoms (first value found)
+    with open(filename) as F:
+        for line in F:
+            if 'NAtoms= ' in line:
+                words = line.split()
+                natom = int(words[1])
+                return natom
 ##
