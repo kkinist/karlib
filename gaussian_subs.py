@@ -565,7 +565,7 @@ def read_pointgroup(fhandl):
     # read all displays of point group. Return a DataFrame:
     #   (1) line number(s), (2) byte number(s),
     #   (3) Schoenflies symbol
-    #   (4) number of operations (i.e., symmetry number)
+    #   (4) number of operations
     byte_start = fhandl.tell()
     fhandl.seek(0)  # rewind file
     gname = []
@@ -588,6 +588,37 @@ def read_pointgroup(fhandl):
             nop.append(int(m.group(2)))
     data = list(zip(fline, fpos, gname, nop))
     cols = ['line', 'byte', 'point group', 'symno']
+    df = pd.DataFrame(data=data, columns=cols)
+    fhandl.seek(byte_start) # restore file pointer to original position
+    return df
+##
+def read_compgroup(fhandl):
+    # read all displays of "Largest Abelian subgroup". Return a DataFrame:
+    #   (1) line number(s), (2) byte number(s),
+    #   (3) Schoenflies symbol
+    #   (4) number of operations
+    byte_start = fhandl.tell()
+    fhandl.seek(0)  # rewind file
+    gname = []
+    nop = []
+    fline = []
+    fpos = []
+    lineno = 0
+    regx = re.compile(r'Largest Abelian subgroup\s+(\S+)\s+NOp\s+(\d+)')
+    while True:
+        line = fhandl.readline()
+        if not line:
+            break
+        lineno += 1
+        m = regx.search(line)
+        if m:
+            # found data
+            fline.append(lineno)
+            fpos.append(fhandl.tell())
+            gname.append(m.group(1))
+            nop.append(int(m.group(2)))
+    data = list(zip(fline, fpos, gname, nop))
+    cols = ['line', 'byte', 'comp group', 'ops']
     df = pd.DataFrame(data=data, columns=cols)
     fhandl.seek(byte_start) # restore file pointer to original position
     return df
@@ -2899,4 +2930,45 @@ def natom(filename):
                 words = line.split()
                 natom = int(words[1])
                 return natom
+##
+def gau_geom_freq_energy(FGAU):
+    # arg is a file handle
+    # return a dict with coordinates, frequencies, optimized SCF energy, and metadata
+    # also return the line number of the last (freq calc) "Optimized" announcement
+    # include electronic state label
+    cmd = str(read_command(FGAU).at[0, 'Command']).split('#', 1)[1].strip()
+    comment = str(read_comments(FGAU).at[0, 'Comment'])
+    retval = {'command': cmd, 'comment': comment}
+    rev = read_version(FGAU)
+    vers = 'Gaussian{:s} {:s}'.format(rev[0], rev[2])
+    retval['software'] = vers    
+    # the calculation is supposed to be geom + freq (analytical)
+    lineno = chem.find_line_number(FGAU, 'Thermochemistry')[0]
+    dfscf = read_scfe(FGAU)
+    dfcrd = read_std_orient(FGAU)
+    dfscf = dfscf[dfscf.line < lineno].sort_values('line')
+    scfE = float(dfscf['Energy'].iloc[-1])  # last energy before the "Optimized" announcement
+    retval['E_scf'] = scfE
+    # choose the last geometry listed before the "Optimized" announcement in the freq calc
+    dfcrd = dfcrd[dfcrd.line < lineno].sort_values('line')
+    crd = dfcrd['Coordinates'].iloc[-1]
+    unit = str(dfcrd['Unit'].iloc[-1])
+    coords = []
+    for i, row in crd.iterrows():
+        c = [chem.elz(row.Z, 'symbol')] + list(row[['x', 'y', 'z']])
+        coords.append(c)
+    retval['coordinates'] = coords
+    retval['basis_functions'] = read_nbfn(FGAU)[0][0]
+    # remove trailing "s" from name of unit
+    if unit[-1] == 's':
+        unit = unit[:-1]
+    retval['unit'] = unit
+    if len(coords) > 1:
+        # harmonic vibrational frequencies
+        retval['Frequencies'] = read_freqs(FGAU)[-1][2]['Freq'].values.tolist()
+        # number of imaginary frequencies in the geometry block
+        retval['nimag'] = int(np.sum(np.array(retval['Frequencies']) < 0))
+    estate = read_electronic_state(FGAU)
+    retval['e-state'] = estate
+    return retval, lineno
 ##
