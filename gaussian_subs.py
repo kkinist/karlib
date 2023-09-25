@@ -2397,6 +2397,29 @@ def count_success(fhandl, handle=True):
     fhandl.seek(byte_start) # restore file pointer to original position
     return nsuccess
 ##
+def final_occup_vector(fname):
+    # Return a DataFrame with columns=irreps and 
+    #   rows=spin
+    # For the last set of converged orbitals 
+    with open(fname, 'r') as F:
+        dforbs = read_orbital_irreps(F)
+    # get final converged occupation 
+    dforbs = dforbs[dforbs.Type == 'converged']
+    dfoccup = dforbs.Orbs.values[-1]
+    dfoccup = dfoccup[dfoccup.Occup == True]
+    irreps = set(dfoccup.Irrep)
+    nirr = len(irreps)
+    spins = set(dfoccup.Spin)
+    nspin = len(spins)
+    data=np.zeros((nspin, nirr), dtype=int)
+    dfocc = pd.DataFrame(columns=sorted(irreps), data=data, index=sorted(spins))
+    for spin in spins:
+        dfspin = dfoccup[dfoccup.Spin == spin]
+        for irr in irreps:
+            subdf = dfspin[dfspin.Irrep == irr]
+            dfocc.loc[spin, irr] = len(subdf)
+    return dfocc
+##
 def read_orbital_irreps(fhandl):
     # return a DataFrame: (1) line numbers (base 1),
     #   (2) byte numbers (file positions for seek/tell),
