@@ -724,7 +724,27 @@ def read_nuclear_repulsion(fhandl):
     df = pd.DataFrame(data=data, columns=cols)
     fhandl.seek(byte_start) # restore file pointer to original position
     return df
-##    
+##
+def read_Abelian_irreps(fgau):
+    # Return a list (last in file) of Abelian irreps
+    irrl = []
+    re_irr = re.compile(r' There are\s+(\d+) symmetry adapted basis functions of (\S+)\s+symmetry')
+    with open(fgau, 'r') as F:
+        for line in F:
+            if ' Center     Atomic      Atomic ' in line:
+                # reset
+                if irrl:
+                    prev = irrl.copy()  # save non-empty list
+                irrl = []
+            m = re_irr.match(line)
+            if m:
+                irr = m.group(2)
+                if irr not in irrl:
+                    irrl.append(irr)
+    if not irrl:
+        irrl = prev
+    return irrl
+##
 def read_dipole_moment(fhandl):
     # read dipole moment and its components (Debye)
     # return a DataFrame:
