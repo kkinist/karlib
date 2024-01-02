@@ -15,6 +15,9 @@ import matplotlib.pyplot as plt
 #from chem_subs import *
 import chem_subs as chem
 
+COMP_GROUPS = ['C1', 'C2', 'C2H', 'C2V', 'CI', 'CS', 'D2', 'D2H']
+
+
 class GauInput():
     # to facilitate modifying and creating Gaussian input files
     def __init__(self, *args, intype='gau_input'):
@@ -365,7 +368,7 @@ def read_version(fhandl):
     return(year, major, minor, date1, date2)
 ##
 def read_comments(fhandl):
-    # read all Gaussian comment lines
+    # read all Gaussian comment lines from an output file
     # return a DataFrame: (1) line numbers (base 1),
     #   (2) file positions (bytes),
     #   (3) the user comments as requested
@@ -381,7 +384,8 @@ def read_comments(fhandl):
     fpos = []
     lineno = pos = iline = clineno = 0
     regxdash = re.compile('^\s*-+$')
-    regxtop = re.compile(r'99//99;')
+    #regxtop = re.compile(r'99//99;')
+    regxtop = re.compile(r'99/.*/99;')
     comm = ''
     while True:
         line = fhandl.readline()
@@ -462,6 +466,7 @@ def read_std_orient(fhandl):
     fline = []
     fpos = []
     xyz = []
+    coordtyp = []
     lineno = 0
     regxdash = re.compile('-{60}')
     regx = re.compile('(Standard|Input|Z-Matrix) orientation:')
@@ -503,12 +508,13 @@ def read_std_orient(fhandl):
             m = regx.search(line)
             if m:
                 # found a standard orientation
+                coordtyp.append(m.group(1))
                 fline.append(lineno)
                 fpos.append(fhandl.tell())
                 instd = True    # set flag
                 ndashline = 0   # counter
-    data = list(zip(fline, fpos, units, coords))
-    cols = ['line', 'byte', 'Unit', 'Coordinates']
+    data = list(zip(fline, fpos, units, coords, coordtyp))
+    cols = ['line', 'byte', 'Unit', 'Coordinates', 'coordtype']
     df_coord = pd.DataFrame(data=data, columns=cols)
     fhandl.seek(byte_start) # restore file pointer to original position
     return df_coord
@@ -969,7 +975,7 @@ def read_atom_masses(fhandl):
     fhandl.seek(byte_start)  # return file pointer to original position
     return masses
 ##
-def read_electronic_state(fhandl, contract=True):
+def xxxread_electronic_state(fhandl, contract=True):
     # read the "electronic state" identified by Gaussian
     # return only the last instance
     # return "?" if Gaussian couldn't figure it out
@@ -986,6 +992,32 @@ def read_electronic_state(fhandl, contract=True):
         estate = estate.replace('-', '')
     fhandl.seek(byte_start)  # return file pointer to original position
     return estate
+##
+def read_electronic_state(FGAU):
+    # Return a DataFrame of e-state symmetry, line numbers
+    # FGAU is a file handle or filename
+    try:
+        FGAU = open(FGAU, 'r')
+    except:
+        # already a file handle
+        pass
+    linenos = []
+    estates = []
+    byte_start = FGAU.tell()
+    FGAU.seek(0)
+    rx = re.compile(' The electronic state is (\S+)\.| Unable to determine electronic state')
+    for iline, line in enumerate(FGAU):
+        m = rx.search(line)
+        if m:
+            linenos.append(iline)
+            if 'Unable' in line:
+                # assignment failure
+                estates.append('?')
+            else:
+                estates.append(m.group(1))
+    FGAU.seek(byte_start)
+    df = pd.DataFrame({'e-state': estates, 'line': linenos})
+    return df
 ##
 def read_g09_archive_block(fhandl):
     # read the last archive block in a Gaussian09 output file
@@ -2139,7 +2171,29 @@ def read_nbfn(fhandl):
         nbfn.append(n)
         lineno.append(lno)
         return nbfn, lineno
- #    
+##    
+def read_nbfn_DF(fhandl):
+    # read number of basis functions
+    # Return a DataFrame
+    #   numbers of basis functions
+    #   line numbers
+    try:
+        byte_start = fhandl.tell()
+        fhandl.seek(0)  # rewind file
+    except:
+        fhandl = open(fhandl, 'r')  # assume it's a filename
+    nbfn = []
+    lineno = []
+    regx = re.compile(r'^\s+(\d+) basis functions,\s+\d+ primitive')
+    for iline, line in enumerate(fhandl):
+        m = regx.match(line)
+        if m:
+            nbfn.append(int(m.group(1)))
+            lineno.append(iline)
+    df = pd.DataFrame({'nbfn': nbfn, 'line': lineno})
+    fhandl.seek(byte_start)
+    return df
+##    
 def read_Mulliken_pops(fhandl):
     # Read (one) full Mulliken population analysis
     # Return four things:
@@ -2974,7 +3028,7 @@ def natom(filename):
                 natom = int(words[1])
                 return natom
 ##
-def gau_geom_freq_energy(FGAU):
+def xxxgau_geom_freq_energy(FGAU):
     # arg is a file handle
     # return a dict with coordinates, frequencies, optimized SCF energy, and metadata
     # also return the line number of the last (freq calc) "Optimized" announcement
